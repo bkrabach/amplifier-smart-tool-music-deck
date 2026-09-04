@@ -386,3 +386,20 @@ def test_no_verb_writes_spotify_content_into_the_state_directory(
         assert code == EXIT_SUCCESS, case.name
 
     assert state_files(state) == {"token.json"}, sorted(state_files(state))
+
+
+def test_the_complete_listing_does_not_call_a_built_verb_unbuilt():
+    """cli.v1 Core 1: a complete listing that lies is worse than none.
+
+    `playlist` and `library` group sub-verbs and have no handler of their own, so
+    they used to render as "[NOT IMPLEMENTED in this build]" -- which was true
+    while their sub-verbs were stubs and became a lie the moment they were not.
+    Exactly one verb is unbuilt now: `apply`, whose lane has not landed.
+    """
+    from music_deck.cli import complete_help
+
+    marker = "[NOT IMPLEMENTED in this build]"
+    unbuilt = [line for line in complete_help().splitlines() if marker in line]
+
+    assert len(unbuilt) == 1, unbuilt
+    assert unbuilt[0].strip().startswith("music-deck apply")

@@ -921,7 +921,11 @@ def terse_help() -> str:
 def _render_verb(verb: Verb, prefix: str = "") -> list[str]:
     full_name = f"{prefix}{verb.name}"
     kind = "model-backed" if verb.model_backed else "deterministic"
-    status = "" if verb.implemented else "  [NOT IMPLEMENTED in this build]"
+    # A verb that only groups sub-verbs has no handler of its own and is never
+    # dispatched to, so marking it unbuilt would be a lie about the sub-verbs
+    # underneath it -- each of which carries its own marker.
+    built = verb.implemented or bool(verb.subverbs)
+    status = "" if built else "  [NOT IMPLEMENTED in this build]"
     lines = [f"{PROG} {full_name}  ({kind}){status}", f"    {verb.summary}"]
     if verb.detail:
         lines.append(f"    {verb.detail}")
