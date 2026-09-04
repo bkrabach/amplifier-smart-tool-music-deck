@@ -1018,3 +1018,45 @@ is flagged above.
 | `src/music_deck/cli.py` | the `plan` verb entry and handler (replacing MD-1's stub) |
 | `src/music_deck/__init__.py` | three exports (`cli.v1` Core 7) |
 | `pyproject.toml` | four provider extras (see note 2) |
+
+## Work item resolved — read back from the queue
+
+AGENTS.md rule 5: evidence lives in a file or in printed output, never inside a
+tool call. So the resolution was written, then read back with the queue's own
+read command, and the stored text pasted here.
+
+```
+$ amplifier-work-tracker list --project music_deck --id music_deck-dws
+ID:       music_deck-dws
+TITLE:    MD-4 Intelligence protocol + `plan` verb + the discriminating good/bad pair (the one-way boundary)
+STATUS:   resolved
+HOLDER:   agent-spark-1-3471396
+CREATED:  2026-09-04T14:10:56+00:00 by agent-spark-1-582165
+UPDATED:  2026-09-04T15:40:21+00:00
+CLOSED:   2026-09-04T15:40:21+00:00
+
+RESOLUTION:
+`music-deck plan "upbeat 90s guitar songs for a Saturday morning"` now turns a brief in your own words into a plan document you can read and edit before anything touches your Spotify account — and prints, alongside it, the verbatim text of every prompt it sent to the model to get it. Add `--context notes.txt` to attach material of your own, `--output plan.json` to write a plan `apply` can read.
+
+The point of this lane is not the verb, it is that Spotify's Developer Policy §III — no Spotify content into an AI model — stopped being a promise and became something you can check yourself. `music_deck.check_plan_transcript(transcript, brief=...)` takes what `plan` printed and tells you, in plain words, whether every character of every prompt came from your own text or from music-deck's own static prompt file: "boundary.v1 Core 2 kept: every one of 1 prompt(s) is covered ... with nothing left over." It works by cover, not by keyword scanning — anything from a third source shows up as leftover text, whether or not it looks like Spotify data — and it is a pure function, so a reviewer can run it against a transcript from a machine they do not have.
+
+That check is proven by a pair that actually discriminates, both halves through the same function: a plan built from the brief alone PASSES; the same run with fetched track metadata appended to the prompt FAILS, naming boundary.v1 Core 2 and quoting the 197 characters that leaked. A leak carrying nothing Spotify-shaped ("the last playlist this user built was called Beach") fails identically; a single stray character fails; whitespace does not.
+
+`plan` makes no Spotify request at all and needs no token: strace shows zero network syscalls of any kind during a run, with a positive control that really did connect to api.spotify.com proving the tracer was live. With no model provider configured it exits 3 with `{"code": "no_provider_configured", "missing": "provider"}` naming which of four preconditions is absent (provider · credentials · provider SDK · engine) and how to fix each — and it refuses BEFORE any prompt exists, proven twice over: the Unconfigured double records and raises if its run() is ever reached (0 invocations), and a tripwire replacing the prompt assembler is never called (0 prompts assembled). It never falls back to a deterministic answer. Provider SDKs are extras (`music-deck[anthropic]`), never base dependencies: importing music_deck, music_deck.intelligence, music_deck.verbs.plan, or the CLI pulls in no provider SDK and not even the engine library — which matters because importing the engine rewrites AMPLIFIER_HOME in the caller's own environment.
+
+Evidence in DONE.md, all pasted output: the good/bad pair; the strace pair; the exit-3 envelope from the binary with the environment scrubbed; the four import probes; 141 tests green (103 of MD-1's unchanged, 38 new); the upstream Smart Tools kit still 15 PASS / 0 FAIL / 0 SKIP against a non-editable install. Beyond the bar, a real Anthropic turn through the production Intelligence was run end to end: a brief unlike the prompt's worked example produced Ethio-jazz and desert-blues steps with size.minutes 60 for "about an hour", and its real transcript passes the same boundary check.
+
+Ships for the lanes after this one: `music_deck.testing` (Recording · Scripted · Unconfigured) inside the package, so a reviewer can run this pair against their own install without cloning; `music_deck.prompt_boundary.check_prompts(prompts, allowed)` as the pure assert boundary.v1's conformance kit needs; and `validate_plan_document` as the single seam MD-5's plan.v1 validator replaces by landing, with no edit to this lane's files. DONE.md records four things for the manager: two now-stale worked-invocation lines in SMART_TOOL.md (the brief is positional and stdout carries plan+transcript); this lane's one edit outside its named paths (four provider extras in pyproject.toml, base deps untouched); the measured finding that amplifier-agent cannot be a declared extra without raising requires-python from >=3.11 to >=3.12 (a steward call); and the deliberate absence of a draft-and-repair round, because a repair prompt would carry the model's own prior output and would fail this tool's own boundary check.
+```
+
+(The item's ACCEPTANCE and DESCRIPTION blocks follow in the same output; they
+are the brief this lane was given, and each of their criteria is answered in the
+"Acceptance criteria" sections above.)
+
+## Lane state at hand-off
+
+- Branch `lane/md-4`, three commits, working tree clean. Nothing merged, nothing
+  pushed to `main`, no PR opened, no tag.
+- No infrastructure was stood up, so there is nothing in the infra ledger to tear
+  down. Everything ran locally: mocked doubles, local files, and one optional
+  real model call from a throwaway venv outside the repo.
