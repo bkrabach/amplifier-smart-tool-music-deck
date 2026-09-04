@@ -1,0 +1,5 @@
+{
+  "manifest": "src/music_deck/SMART_TOOL.md",
+  "cli_argv": ["music-deck"],
+  "deterministic_smoke": ["check"]
+}
