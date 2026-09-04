@@ -27,8 +27,10 @@ to avoid.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Final, Sequence
 
 from music_deck.check import check as run_check
@@ -45,6 +47,7 @@ from music_deck.errors import (
     emit_json,
 )
 from music_deck.manifest import manifest as read_manifest
+from music_deck.verbs.plan import plan as run_plan
 
 PROG: Final = "music-deck"
 
@@ -113,6 +116,49 @@ def _handle_manifest(_args: argparse.Namespace) -> dict[str, Any]:
     return read_manifest()
 
 
+def _handle_plan(args: argparse.Namespace) -> dict[str, Any]:
+    """`plan` -- the only model-backed verb (``cli.v1`` Core 3).
+
+    The CLI reads ``--context`` off disk and hands the library its *content*:
+    a library that took a path would be deciding what a caller may read. The
+    library never touches the filesystem for this.
+
+    ``--output`` writes the plan document alone, so the file is directly
+    applicable with ``music-deck apply --plan <file>``. stdout still carries the
+    full result -- plan plus prompt transcript -- because ``boundary.v1`` Core 3
+    makes the transcript part of the answer, not an optional extra.
+    """
+    context: str | None = None
+    if getattr(args, "context", None):
+        source = Path(args.context)
+        try:
+            context = source.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise MusicDeckError(
+                ErrorCode.USAGE,
+                f"--context {str(source)!r} could not be read: {exc.strerror or exc}.",
+                "Point --context at a readable text file, or leave it out.",
+            ) from exc
+
+    result = run_plan(args.brief, context=context)
+
+    if getattr(args, "output", None):
+        destination = Path(args.output)
+        try:
+            destination.write_text(
+                json.dumps(result["plan"], indent=2) + "\n", encoding="utf-8"
+            )
+        except OSError as exc:
+            raise MusicDeckError(
+                ErrorCode.USAGE,
+                f"--output {str(destination)!r} could not be written: "
+                f"{exc.strerror or exc}.",
+                "Point --output at a writable path, or leave it out and read the "
+                "plan from stdout.",
+            ) from exc
+    return result
+
+
 # The order here is the order cli.v1 Core 2 lists them, with `check` and
 # `manifest` first because they are the two that work today.
 VERBS: Final[tuple[Verb, ...]] = (
@@ -133,6 +179,8 @@ VERBS: Final[tuple[Verb, ...]] = (
         "A JSON object: the manifest frontmatter.",
         handler=_handle_manifest,
     ),
+    # `plan` is declared further down, in the order cli.v1 lists the verbs; its
+    # handler is wired there.
     Verb(
         "login",
         "Authorise against your own Spotify app, once, via PKCE in a browser.",
@@ -513,16 +561,34 @@ VERBS: Final[tuple[Verb, ...]] = (
     Verb(
         "plan",
         "Turn a brief in your own words into a readable plan document.",
-        "A JSON plan document per contracts/plan.v1.md, carrying its prompt transcript.",
+        (
+            "A JSON object: `plan` (a plan.v1 document) and `transcript` (the "
+            "verbatim text of every prompt sent to the model)."
+        ),
         args=(
-            Arg("--brief", "string", "What you want, in your own words.", required=True),
-            Arg("--output", "path", "Where to write the plan. Defaults to stdout."),
+            Arg("brief", "string", "What you want, in your own words.", required=True),
+            Arg(
+                "--context",
+                "path",
+                "A text file whose contents are passed to the model as caller data.",
+            ),
+            Arg(
+                "--output",
+                "path",
+                "Write the plan document here, ready for `apply`. stdout still "
+                "carries the plan and its transcript.",
+            ),
         ),
         model_backed=True,
+        handler=_handle_plan,
         detail=(
             "The only model-backed verb. With no usable model substrate it exits 3 "
-            "naming the missing precondition, and never falls back to a "
-            "deterministic answer. It makes no Spotify request at all."
+            "naming the missing precondition -- no provider configured, no "
+            "credentials, the provider SDK absent, or the engine absent -- and "
+            "never falls back to a deterministic answer. It makes no Spotify "
+            "request at all and needs no token: every prompt is built from your "
+            "own text and music-deck's own static prompt text, and `transcript` "
+            "is there so you can check that yourself."
         ),
     ),
 )
