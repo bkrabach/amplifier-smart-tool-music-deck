@@ -1,0 +1,22 @@
+{
+  "plan_format": 1,
+  "brief": "one short step",
+  "target": {
+    "kind": "new",
+    "name": "One step"
+  },
+  "steps": [
+    {
+      "search": "genre:shoegaze year:1991",
+      "type": "album",
+      "take": 2,
+      "why": "whole records"
+    }
+  ],
+  "rules": {
+    "exclude_artists": [],
+    "exclude_title_terms": [],
+    "dedupe": "none",
+    "order": "as_planned"
+  }
+}
