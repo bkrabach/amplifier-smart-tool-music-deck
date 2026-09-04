@@ -1,0 +1,35 @@
+{
+  "plan_format": 1,
+  "brief": "upbeat 90s guitar songs for a Saturday morning",
+  "target": {
+    "kind": "new",
+    "name": "Saturday Morning Guitar",
+    "description": "Upbeat 90s guitar songs to start a Saturday"
+  },
+  "steps": [
+    {
+      "search": "genre:alternative year:1990-1999",
+      "type": "track",
+      "take": 25,
+      "why": "the core 90s alt-guitar sound the brief asks for"
+    },
+    {
+      "search": "genre:britpop year:1993-1998",
+      "type": "track",
+      "take": 10,
+      "why": "brighter, faster guitar pop to keep the mood upbeat"
+    }
+  ],
+  "rules": {
+    "exclude_artists": [],
+    "exclude_title_terms": [
+      "live"
+    ],
+    "dedupe": "by_track_id",
+    "order": "as_planned"
+  },
+  "size": {
+    "tracks": 35,
+    "tolerance_pct": 10
+  }
+}
