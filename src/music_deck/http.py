@@ -617,7 +617,8 @@ class SpotifyClient:
         therefore not an error -- it is more requests, which this walks for you
         and stops at ``limit`` exactly.
         """
-        page_cap = SEARCH_PAGE_CAP if path.rstrip("/").endswith("/search") else DEFAULT_PAGE_CAP
+        is_search = path.rstrip("/").endswith("/search")
+        page_cap = SEARCH_PAGE_CAP if is_search else DEFAULT_PAGE_CAP
         collected: list[Any] = []
         offset = int((params or {}).get("offset", 0) or 0)
         while len(collected) < limit:
