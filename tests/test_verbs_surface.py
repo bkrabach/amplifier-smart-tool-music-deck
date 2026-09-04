@@ -394,12 +394,33 @@ def test_the_complete_listing_does_not_call_a_built_verb_unbuilt():
     `playlist` and `library` group sub-verbs and have no handler of their own, so
     they used to render as "[NOT IMPLEMENTED in this build]" -- which was true
     while their sub-verbs were stubs and became a lie the moment they were not.
-    Exactly one verb is unbuilt now: `apply`, whose lane has not landed.
+    `apply` was the last verb still carrying the marker honestly; MD-5
+    (music_deck-v0b) built it, so nothing carries it now.
+
+    The assertion is deliberately "none", not "at most one": an agent reading
+    the complete listing has to be able to trust that an unmarked verb works,
+    and the day a lane adds a stub without building it, this fails.
     """
     from music_deck.cli import complete_help
 
     marker = "[NOT IMPLEMENTED in this build]"
     unbuilt = [line for line in complete_help().splitlines() if marker in line]
 
-    assert len(unbuilt) == 1, unbuilt
-    assert unbuilt[0].strip().startswith("music-deck apply")
+    assert unbuilt == [], unbuilt
+
+
+def test_the_complete_listing_still_carries_the_marker_when_a_verb_is_unbuilt():
+    """The other half: a listing that *never* marks anything proves nothing.
+
+    With no stub left in the table, "no line carries the marker" would also pass
+    for a build that had quietly stopped rendering the marker at all. This puts
+    a stub back, in a copy of the table, and checks the rendering still says so.
+    """
+    import dataclasses
+
+    from music_deck.cli import VERBS_BY_NAME, _render_verb
+
+    stub = dataclasses.replace(VERBS_BY_NAME["apply"], handler=None)
+    rendered = "\n".join(_render_verb(stub))
+
+    assert "[NOT IMPLEMENTED in this build]" in rendered

@@ -1,0 +1,22 @@
+{
+  "plan_format": 1,
+  "brief": "one short step",
+  "target": {
+    "kind": "new",
+    "name": "One step"
+  },
+  "steps": [
+    {
+      "search": "artist:Slowdive",
+      "type": "track",
+      "take": 3,
+      "why": "just this"
+    }
+  ],
+  "rules": {
+    "exclude_artists": [],
+    "exclude_title_terms": [],
+    "dedupe": "none",
+    "order": "as_planned"
+  }
+}

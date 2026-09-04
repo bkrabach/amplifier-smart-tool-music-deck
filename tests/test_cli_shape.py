@@ -88,8 +88,9 @@ ALL_VERBS = DETERMINISTIC_VERBS + MODEL_BACKED_VERBS
 # file's `run()` passes no MUSIC_DECK_STATE_DIR) would point it at the real
 # ~/.local/state/music-deck of whoever runs the suite. Each landing lane adds its
 # verbs here; MD-2 added login, disconnect, whoami; MD-3 added the deterministic
-# Spotify verbs below; MD-4 added plan. Coverage for them lives in
-# tests/test_auth.py, tests/test_http_refusals.py, tests/test_disconnect.py and
+# Spotify verbs below; MD-4 added plan; MD-5 added apply, which was the last one
+# left. Coverage for them lives in tests/test_auth.py,
+# tests/test_http_refusals.py, tests/test_disconnect.py, tests/test_apply.py and
 # tests/test_verbs_*.py, which drive them against a temporary state directory and
 # a fake transport.
 IMPLEMENTED_VERBS = (
@@ -132,6 +133,7 @@ IMPLEMENTED_VERBS = (
     "repeat",
     "transfer",
     "queue-add",
+    "apply",
 )
 
 # The same regex the upstream conformance kit scrubs the environment with.
@@ -316,13 +318,33 @@ def test_diagnostics_go_to_stderr_and_the_document_to_stdout(scratch):
     json.loads(result.stdout)
 
 
-@pytest.mark.parametrize("verb", [v for v in ALL_VERBS if v not in IMPLEMENTED_VERBS])
+UNBUILT_VERBS = tuple(v for v in ALL_VERBS if v not in IMPLEMENTED_VERBS)
+"""Every verb `cli.v1` Core 2 names whose lane has not landed. Empty since MD-5."""
+
+
+def test_every_verb_the_contract_names_is_built():
+    """The guard the two tests below rest on, stated once as its own claim.
+
+    While a verb was a stub, `test_every_unbuilt_verb_refuses_loudly...` did the
+    work; with MD-5's `apply` landed there is nothing left for it to iterate, so
+    the thing worth asserting is that the list is empty *on purpose*. A lane that
+    adds a new stub verb without building it fails here, which is where the
+    parametrised check below picks the job back up.
+    """
+    assert UNBUILT_VERBS == (), UNBUILT_VERBS
+    assert set(ALL_VERBS) == set(IMPLEMENTED_VERBS)
+
+
+@pytest.mark.parametrize("verb", UNBUILT_VERBS)
 def test_every_unbuilt_verb_refuses_loudly_rather_than_exiting_zero(verb, scratch):
     """A stub that exits 0 would hide the gap from every caller.
 
     Invoked bare, a verb either refuses `not_implemented` (it needs no
     arguments) or refuses `usage` (it does). Both are loud and both are
     non-zero, which is the promise; neither is a silent success.
+
+    Nothing is unbuilt today, so this parametrises to nothing -- and the test
+    above is what proves that is the reason.
     """
     result = run(*verb.split(), cwd=scratch)
     assert result.returncode != EXIT_SUCCESS
@@ -330,17 +352,55 @@ def test_every_unbuilt_verb_refuses_loudly_rather_than_exiting_zero(verb, scratc
     assert code in {ErrorCode.NOT_IMPLEMENTED, ErrorCode.USAGE}
 
 
-def test_an_unbuilt_verb_reports_not_implemented_when_its_arguments_are_valid(scratch):
-    """`apply` is the last unbuilt verb; its lane (MD-5) has not landed.
+def test_apply_reads_its_plan_rather_than_refusing_as_a_stub(scratch):
+    """`apply` was the last unbuilt verb until MD-5 (music_deck-v0b) landed.
 
-    The refusal is decided from the verb table before the argument is looked at,
-    so the path passed to --plan is never read and need not exist.
+    Pointed at a path that does not exist, it now refuses `usage` -- having
+    *tried to read the file* -- where it used to refuse `not_implemented` from
+    the verb table without looking at the argument at all. That difference is
+    the whole of "the stub is gone", and it is visible from outside the process.
     """
     result = run("apply", "--plan", str(scratch / "no-such-plan.json"), cwd=scratch)
-    assert result.returncode == EXIT_FAILURE
+    assert result.returncode == EXIT_REFUSAL
     envelope = json.loads(result.stdout)["error"]
-    assert envelope["code"] == ErrorCode.NOT_IMPLEMENTED
-    assert envelope["verb"] == "apply"
+    assert envelope["code"] == ErrorCode.USAGE
+    assert "no-such-plan.json" in envelope["message"]
+
+
+def test_apply_refuses_a_bad_plan_with_invalid_plan_naming_the_path(scratch):
+    """cli.v1 Core 6 and plan.v1 Core 6, at the binary, from a scrubbed shell.
+
+    The in-process suite covers the whole refusal table; this is the one that
+    proves the code and the path survive the trip through argparse, the
+    envelope, and the exit code -- as a real subprocess with stdin closed.
+    """
+    plan = scratch / "bad-plan.json"
+    plan.write_text(
+        json.dumps(
+            {
+                "plan_format": 1,
+                "brief": "a brief",
+                "target": {"kind": "new", "name": "Nope"},
+                "steps": [
+                    {"search": "rock", "type": "track", "take": 0, "why": "none"}
+                ],
+                "rules": {
+                    "exclude_artists": [],
+                    "exclude_title_terms": [],
+                    "dedupe": "none",
+                    "order": "as_planned",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = run("apply", str(plan), cwd=scratch)
+
+    assert result.returncode == EXIT_REFUSAL
+    envelope = json.loads(result.stdout)["error"]
+    assert envelope["code"] == ErrorCode.INVALID_PLAN
+    assert envelope["path"] == "$.steps[0].take"
 
 
 # --------------------------------------------------------------------------- #

@@ -48,6 +48,8 @@ from music_deck.errors import (
 )
 from music_deck.manifest import manifest as read_manifest
 from music_deck.verbs import catalog, library, player, playlists
+from music_deck.verbs.apply import apply_plan as run_apply
+from music_deck.verbs.apply import read_plan
 from music_deck.verbs.plan import plan as run_plan
 from music_deck.verbs.auth_verbs import disconnect as run_disconnect
 from music_deck.verbs.auth_verbs import login as run_login
@@ -161,6 +163,37 @@ def _handle_plan(args: argparse.Namespace) -> dict[str, Any]:
                 "plan from stdout.",
             ) from exc
     return result
+
+
+def _handle_apply(args: argparse.Namespace) -> dict[str, Any]:
+    """`apply` -- the deterministic half of the one-way design.
+
+    The plan may be named either way round: `music-deck apply plan.json` reads
+    the way a caller writes it, and `music-deck apply --plan plan.json` is the
+    form `music-deck plan --output` has told people to use since MD-1. Both
+    resolve to the same library call; naming it twice, or not at all, is a
+    `usage` refusal rather than a guess.
+
+    Reading the file is ``apply.read_plan``'s job, not this module's: turning
+    "that is not JSON" into ``invalid_plan`` is a judgement about plans, and
+    ``docs/VISION.md`` principle 1 keeps those in the library.
+    """
+    named = [value for value in (args.plan_file, args.plan) if value]
+    if not named:
+        raise MusicDeckError(
+            ErrorCode.USAGE,
+            "`music-deck apply` needs a plan document to carry out.",
+            "Run: music-deck apply plan.json  (or --plan plan.json). Write one "
+            'with `music-deck plan "<your brief>" --output plan.json`.',
+        )
+    if len(named) == 2 and args.plan_file != args.plan:
+        raise MusicDeckError(
+            ErrorCode.USAGE,
+            f"`music-deck apply` was given two different plans: "
+            f"{args.plan_file!r} and --plan {args.plan!r}.",
+            "Name the plan once, either as the argument or with --plan.",
+        )
+    return run_apply(read_plan(named[0]))
 
 
 def _handle_login(args: argparse.Namespace) -> dict[str, Any]:
@@ -843,11 +876,20 @@ VERBS: Final[tuple[Verb, ...]] = (
             "requested/fetched/kept."
         ),
         args=(
-            Arg("--plan", "path", "Path to a plan JSON document.", required=True),
+            Arg(
+                "plan_file",
+                "path",
+                "Path to a plan JSON document. `--plan` names the same thing.",
+            ),
+            Arg("--plan", "path", "Path to a plan JSON document."),
         ),
+        handler=_handle_apply,
         detail=(
-            "No model runs during apply. An under-fulfilled step is reported as "
-            "`partial_result`, never as a silent success."
+            "No model runs during apply. The plan is validated against plan.v1 "
+            "before a single request is sent, so a bad plan costs nothing and "
+            "refuses `invalid_plan` naming the offending JSON path. An "
+            "under-fulfilled step is reported as `partial_result` carrying the "
+            "per-step completeness, never as a silent success."
         ),
     ),
     Verb(
@@ -1018,6 +1060,12 @@ def _add_args(parser: argparse.ArgumentParser, args: Sequence[Arg]) -> None:
         if arg.positional:
             if arg.repeated:
                 options["nargs"] = "+"
+            elif not arg.required:
+                # A positional argparse would otherwise insist on. `apply` takes
+                # its plan either way round -- `apply plan.json` or
+                # `apply --plan plan.json` -- so the positional has to be
+                # allowed to be absent; the verb itself says which it got.
+                options["nargs"] = "?"
             parser.add_argument(arg.name, **options)
         else:
             if arg.required:
