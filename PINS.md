@@ -53,7 +53,7 @@ Read this before your first command. Every line is a fact you may rely on.
 
 ## Work tracking
 
-- Work-tracker project: not created yet.
+- Work-tracker project: `music_deck` (underscore — the tracker rejects hyphens). Items MD-1..MD-6 = music_deck-5xp, -2rj, -uyf, -dws, -v0b, -wju.
 - Every work item names the contract it serves.
 
 ## Handoffs to other lanes
