@@ -47,6 +47,7 @@ from music_deck.errors import (
     emit_json,
 )
 from music_deck.manifest import manifest as read_manifest
+from music_deck.verbs import catalog, library, player, playlists
 from music_deck.verbs.plan import plan as run_plan
 from music_deck.verbs.auth_verbs import disconnect as run_disconnect
 from music_deck.verbs.auth_verbs import login as run_login
@@ -174,6 +175,152 @@ def _handle_whoami(_args: argparse.Namespace) -> dict[str, Any]:
     return run_whoami()
 
 
+# -- the deterministic Spotify verbs ---------------------------------------- #
+# Each of these is one line on purpose: `cli.v1` Core 7 and docs/VISION.md
+# principle 1 put the whole implementation in the library, so the CLI's share of
+# a verb is exactly "read the parsed arguments, call the function". Anything
+# more here would be capability a Python caller could not reach.
+def _handle_search(args: argparse.Namespace) -> dict[str, Any]:
+    return catalog.search(args.query, kind=args.type, limit=args.limit)
+
+
+def _handle_track(args: argparse.Namespace) -> Any:
+    return catalog.track(args.id)
+
+
+def _handle_album(args: argparse.Namespace) -> Any:
+    return catalog.album(args.id)
+
+
+def _handle_artist(args: argparse.Namespace) -> Any:
+    return catalog.artist(args.id)
+
+
+def _handle_show(args: argparse.Namespace) -> Any:
+    return catalog.show(args.id)
+
+
+def _handle_episode(args: argparse.Namespace) -> Any:
+    return catalog.episode(args.id)
+
+
+def _handle_playlists(args: argparse.Namespace) -> dict[str, Any]:
+    return playlists.playlists(limit=args.limit)
+
+
+def _handle_playlist_items(args: argparse.Namespace) -> dict[str, Any]:
+    return playlists.playlist_items(args.playlist_id, limit=args.limit)
+
+
+def _handle_playlist_create(args: argparse.Namespace) -> Any:
+    return playlists.playlist_create(
+        args.name, description=args.description, public=args.public
+    )
+
+
+def _handle_playlist_add(args: argparse.Namespace) -> dict[str, Any]:
+    return playlists.playlist_add(args.playlist_id, args.track)
+
+
+def _handle_playlist_remove(args: argparse.Namespace) -> dict[str, Any]:
+    return playlists.playlist_remove(args.playlist_id, args.track)
+
+
+def _handle_playlist_reorder(args: argparse.Namespace) -> dict[str, Any]:
+    return playlists.playlist_reorder(
+        args.playlist_id,
+        range_start=args.range_start,
+        insert_before=args.insert_before,
+        range_length=args.range_length,
+    )
+
+
+def _handle_playlist_rename(args: argparse.Namespace) -> dict[str, Any]:
+    return playlists.playlist_rename(args.playlist_id, args.name)
+
+
+def _handle_library_list(args: argparse.Namespace) -> dict[str, Any]:
+    return library.library_list(kind=args.type, limit=args.limit)
+
+
+def _handle_library_save(args: argparse.Namespace) -> dict[str, Any]:
+    return library.library_save(args.item)
+
+
+def _handle_library_remove(args: argparse.Namespace) -> dict[str, Any]:
+    return library.library_remove(args.item)
+
+
+def _handle_library_contains(args: argparse.Namespace) -> dict[str, Any]:
+    return library.library_contains(args.item)
+
+
+def _handle_following(args: argparse.Namespace) -> dict[str, Any]:
+    return library.following(limit=args.limit)
+
+
+def _handle_top(args: argparse.Namespace) -> dict[str, Any]:
+    return player.top(kind=args.type, time_range=args.time_range, limit=args.limit)
+
+
+def _handle_recently_played(args: argparse.Namespace) -> dict[str, Any]:
+    return player.recently_played(limit=args.limit)
+
+
+def _handle_now_playing(_args: argparse.Namespace) -> Any:
+    return player.now_playing()
+
+
+def _handle_devices(_args: argparse.Namespace) -> dict[str, Any]:
+    return player.devices()
+
+
+def _handle_queue(_args: argparse.Namespace) -> dict[str, Any]:
+    return player.queue()
+
+
+def _handle_play(args: argparse.Namespace) -> dict[str, Any]:
+    return player.play(
+        uri=args.uri, position_ms=args.position_ms, device=args.device
+    )
+
+
+def _handle_pause(args: argparse.Namespace) -> dict[str, Any]:
+    return player.pause(device=args.device)
+
+
+def _handle_next(args: argparse.Namespace) -> dict[str, Any]:
+    return player.next_track(device=args.device)
+
+
+def _handle_previous(args: argparse.Namespace) -> dict[str, Any]:
+    return player.previous_track(device=args.device)
+
+
+def _handle_seek(args: argparse.Namespace) -> dict[str, Any]:
+    return player.seek(args.position_ms, device=args.device)
+
+
+def _handle_volume(args: argparse.Namespace) -> dict[str, Any]:
+    return player.volume(args.percent, device=args.device)
+
+
+def _handle_shuffle(args: argparse.Namespace) -> dict[str, Any]:
+    return player.shuffle(args.state, device=args.device)
+
+
+def _handle_repeat(args: argparse.Namespace) -> dict[str, Any]:
+    return player.repeat(args.state, device=args.device)
+
+
+def _handle_transfer(args: argparse.Namespace) -> dict[str, Any]:
+    return player.transfer(args.device_id, play_after=args.play)
+
+
+def _handle_queue_add(args: argparse.Namespace) -> dict[str, Any]:
+    return player.queue_add(args.uri, device=args.device)
+
+
 # The order here is the order cli.v1 Core 2 lists them, with `check` and
 # `manifest` first because they are the two that work today.
 VERBS: Final[tuple[Verb, ...]] = (
@@ -247,42 +394,75 @@ VERBS: Final[tuple[Verb, ...]] = (
                 default=10,
             ),
         ),
+        handler=_handle_search,
+        detail=(
+            "Spotify caps a search request at 10 results (February 2026; it was "
+            "50). Asking for more is not an error and not a truncation -- it is "
+            "more requests, walked for you, stopping at --limit exactly. The "
+            "result reports `requested` beside `returned`."
+        ),
     ),
     Verb(
         "track",
         "Look up one track.",
         "A JSON object describing the track.",
         args=(Arg("id", "string", "Spotify track id or URI.", required=True),),
+        handler=_handle_track,
+        detail=(
+            "One item, one request. Spotify withdrew the batch fetch endpoints "
+            "in February 2026, so music-deck never asks for several at once."
+        ),
     ),
     Verb(
         "album",
         "Look up one album.",
         "A JSON object describing the album.",
         args=(Arg("id", "string", "Spotify album id or URI.", required=True),),
+        handler=_handle_album,
+        detail=(
+            "One item, one request. Spotify withdrew the batch fetch endpoints "
+            "in February 2026, so music-deck never asks for several at once."
+        ),
     ),
     Verb(
         "artist",
         "Look up one artist.",
         "A JSON object describing the artist.",
         args=(Arg("id", "string", "Spotify artist id or URI.", required=True),),
+        handler=_handle_artist,
+        detail=(
+            "One item, one request. Spotify withdrew the batch fetch endpoints "
+            "in February 2026, so music-deck never asks for several at once."
+        ),
     ),
     Verb(
         "show",
         "Look up one podcast show.",
         "A JSON object describing the show.",
         args=(Arg("id", "string", "Spotify show id or URI.", required=True),),
+        handler=_handle_show,
+        detail=(
+            "One item, one request. Spotify withdrew the batch fetch endpoints "
+            "in February 2026, so music-deck never asks for several at once."
+        ),
     ),
     Verb(
         "episode",
         "Look up one podcast episode.",
         "A JSON object describing the episode.",
         args=(Arg("id", "string", "Spotify episode id or URI.", required=True),),
+        handler=_handle_episode,
+        detail=(
+            "One item, one request. Spotify withdrew the batch fetch endpoints "
+            "in February 2026, so music-deck never asks for several at once."
+        ),
     ),
     Verb(
         "playlists",
         "List the signed-in account's playlists.",
         "A JSON object with a `playlists` list.",
         args=(_LIMIT,),
+        handler=_handle_playlists,
     ),
     Verb(
         "playlist",
@@ -297,6 +477,7 @@ VERBS: Final[tuple[Verb, ...]] = (
                     Arg("playlist_id", "string", "Spotify playlist id.", required=True),
                     _LIMIT,
                 ),
+                handler=_handle_playlist_items,
                 detail=(
                     "Spotify returns items only for a playlist the caller owns or "
                     "collaborates on; anything else refuses "
@@ -312,6 +493,8 @@ VERBS: Final[tuple[Verb, ...]] = (
                     Arg("--description", "string", "The playlist's description."),
                     Arg("--public", "flag", "Make the playlist public."),
                 ),
+                handler=_handle_playlist_create,
+                detail="Private unless --public is passed.",
             ),
             Verb(
                 "add",
@@ -326,6 +509,12 @@ VERBS: Final[tuple[Verb, ...]] = (
                         required=True,
                         repeated=True,
                     ),
+                ),
+                handler=_handle_playlist_add,
+                detail=(
+                    "Spotify takes at most 100 items per request, so 250 tracks "
+                    "is three requests sent in order. A run that gets part way "
+                    "refuses `partial_result` naming what did land."
                 ),
             ),
             Verb(
@@ -342,6 +531,8 @@ VERBS: Final[tuple[Verb, ...]] = (
                         repeated=True,
                     ),
                 ),
+                handler=_handle_playlist_remove,
+                detail="Batched at 100 per request, like `playlist add`.",
             ),
             Verb(
                 "reorder",
@@ -368,6 +559,8 @@ VERBS: Final[tuple[Verb, ...]] = (
                         default=1,
                     ),
                 ),
+                handler=_handle_playlist_reorder,
+                detail="Positions are zero-based: the first item is position 0.",
             ),
             Verb(
                 "rename",
@@ -377,6 +570,7 @@ VERBS: Final[tuple[Verb, ...]] = (
                     Arg("playlist_id", "string", "Spotify playlist id.", required=True),
                     Arg("name", "string", "The new name.", required=True),
                 ),
+                handler=_handle_playlist_rename,
             ),
         ),
     ),
@@ -389,7 +583,22 @@ VERBS: Final[tuple[Verb, ...]] = (
                 "list",
                 "List saved library items.",
                 "A JSON object with an `items` list.",
-                args=(_LIMIT,),
+                args=(
+                    Arg(
+                        "--type",
+                        "string",
+                        "Which saved content type to list.",
+                        choices=("tracks", "albums", "shows", "episodes", "audiobooks"),
+                        default="tracks",
+                    ),
+                    _LIMIT,
+                ),
+                handler=_handle_library_list,
+                detail=(
+                    "Spotify enumerates saved items one content type at a time, "
+                    "so this takes --type. Saving and removing do not: they take "
+                    "URIs of any type together."
+                ),
             ),
             Verb(
                 "save",
@@ -399,10 +608,16 @@ VERBS: Final[tuple[Verb, ...]] = (
                     Arg(
                         "item",
                         "string",
-                        "One or more Spotify ids or URIs.",
+                        "One or more Spotify URIs or open.spotify.com links.",
                         required=True,
                         repeated=True,
                     ),
+                ),
+                handler=_handle_library_save,
+                detail=(
+                    "Takes URIs, not bare ids: since February 2026 one endpoint "
+                    "saves any content type, so the URI is what says which type "
+                    "this is. Following an artist is saving its URI."
                 ),
             ),
             Verb(
@@ -413,25 +628,29 @@ VERBS: Final[tuple[Verb, ...]] = (
                     Arg(
                         "item",
                         "string",
-                        "One or more Spotify ids or URIs.",
+                        "One or more Spotify URIs or open.spotify.com links.",
                         required=True,
                         repeated=True,
                     ),
                 ),
+                handler=_handle_library_remove,
+                detail="Takes URIs, not bare ids -- see `library save`.",
             ),
             Verb(
                 "contains",
                 "Ask whether items are in the library.",
-                "A JSON object mapping each id to true or false.",
+                "A JSON object mapping each URI to true or false.",
                 args=(
                     Arg(
                         "item",
                         "string",
-                        "One or more Spotify ids or URIs.",
+                        "One or more Spotify URIs or open.spotify.com links.",
                         required=True,
                         repeated=True,
                     ),
                 ),
+                handler=_handle_library_contains,
+                detail="Takes URIs, not bare ids -- see `library save`.",
             ),
         ),
     ),
@@ -440,6 +659,11 @@ VERBS: Final[tuple[Verb, ...]] = (
         "List the artists the account follows.",
         "A JSON object with an `artists` list.",
         args=(_LIMIT,),
+        handler=_handle_following,
+        detail=(
+            "Reading who the account follows is all that survived February 2026: "
+            "following and unfollowing are `library save` and `library remove`."
+        ),
     ),
     Verb(
         "top",
@@ -462,27 +686,46 @@ VERBS: Final[tuple[Verb, ...]] = (
             ),
             _LIMIT,
         ),
+        handler=_handle_top,
+        detail=(
+            "Spotify's own windows: short_term is about four weeks, medium_term "
+            "about six months, long_term about a year."
+        ),
     ),
     Verb(
         "recently-played",
         "List recently played tracks.",
         "A JSON object with an `items` list.",
         args=(_LIMIT,),
+        handler=_handle_recently_played,
+        detail="Spotify's note: this does not currently include podcast episodes.",
     ),
     Verb(
         "now-playing",
         "Report what is playing right now.",
-        "A JSON object describing current playback, or a `playing: false` report.",
+        "A JSON object describing current playback.",
+        handler=_handle_now_playing,
+        detail=(
+            "With nothing playing, Spotify answers 204 No Content and music-deck "
+            "refuses `no_active_device` rather than returning an empty document: "
+            "\"nothing is playing\" and \"I could not tell\" must not look alike."
+        ),
     ),
     Verb(
         "devices",
         "List the account's available Spotify Connect devices.",
         "A JSON object with a `devices` list.",
+        handler=_handle_devices,
+        detail=(
+            "Only Spotify clients already running and signed in appear here. An "
+            "empty list is a real answer -- and the one to read before `transfer`."
+        ),
     ),
     Verb(
         "queue",
         "Read the playback queue.",
         "A JSON object with `currently_playing` and a `queue` list.",
+        handler=_handle_queue,
     ),
     Verb(
         "play",
@@ -493,25 +736,33 @@ VERBS: Final[tuple[Verb, ...]] = (
             Arg("--position-ms", "integer", "Where in the track to start."),
             _DEVICE,
         ),
-        detail="Needs Premium and an active device; music-deck produces no audio itself.",
+        handler=_handle_play,
+        detail=(
+            "Needs Premium and an active device; music-deck produces no audio "
+            "itself. An album, artist or playlist URI plays as a context; a track "
+            "or episode URI plays on its own. Omit --uri to resume."
+        ),
     ),
     Verb(
         "pause",
         "Pause playback.",
         "A JSON object confirming the playback state.",
         args=(_DEVICE,),
+        handler=_handle_pause,
     ),
     Verb(
         "next",
         "Skip to the next track.",
         "A JSON object confirming the playback state.",
         args=(_DEVICE,),
+        handler=_handle_next,
     ),
     Verb(
         "previous",
         "Skip to the previous track.",
         "A JSON object confirming the playback state.",
         args=(_DEVICE,),
+        handler=_handle_previous,
     ),
     Verb(
         "seek",
@@ -521,6 +772,7 @@ VERBS: Final[tuple[Verb, ...]] = (
             Arg("position_ms", "integer", "Position in milliseconds.", required=True),
             _DEVICE,
         ),
+        handler=_handle_seek,
     ),
     Verb(
         "volume",
@@ -530,6 +782,8 @@ VERBS: Final[tuple[Verb, ...]] = (
             Arg("percent", "integer", "Volume from 0 to 100.", required=True),
             _DEVICE,
         ),
+        handler=_handle_volume,
+        detail="Only devices that report `supports_volume` accept this.",
     ),
     Verb(
         "shuffle",
@@ -539,6 +793,7 @@ VERBS: Final[tuple[Verb, ...]] = (
             Arg("state", "string", "on or off.", required=True, choices=("on", "off")),
             _DEVICE,
         ),
+        handler=_handle_shuffle,
     ),
     Verb(
         "repeat",
@@ -554,6 +809,7 @@ VERBS: Final[tuple[Verb, ...]] = (
             ),
             _DEVICE,
         ),
+        handler=_handle_repeat,
     ),
     Verb(
         "transfer",
@@ -562,6 +818,11 @@ VERBS: Final[tuple[Verb, ...]] = (
         args=(
             Arg("device_id", "string", "The device to move playback to.", required=True),
             Arg("--play", "flag", "Start playing after transferring."),
+        ),
+        handler=_handle_transfer,
+        detail=(
+            "Spotify supports exactly one device per transfer. Run `music-deck "
+            "devices` for the ids."
         ),
     ),
     Verb(
@@ -572,6 +833,7 @@ VERBS: Final[tuple[Verb, ...]] = (
             Arg("uri", "string", "Spotify track or episode URI.", required=True),
             _DEVICE,
         ),
+        handler=_handle_queue_add,
     ),
     Verb(
         "apply",
@@ -659,7 +921,11 @@ def terse_help() -> str:
 def _render_verb(verb: Verb, prefix: str = "") -> list[str]:
     full_name = f"{prefix}{verb.name}"
     kind = "model-backed" if verb.model_backed else "deterministic"
-    status = "" if verb.implemented else "  [NOT IMPLEMENTED in this build]"
+    # A verb that only groups sub-verbs has no handler of its own and is never
+    # dispatched to, so marking it unbuilt would be a lie about the sub-verbs
+    # underneath it -- each of which carries its own marker.
+    built = verb.implemented or bool(verb.subverbs)
+    status = "" if built else "  [NOT IMPLEMENTED in this build]"
     lines = [f"{PROG} {full_name}  ({kind}){status}", f"    {verb.summary}"]
     if verb.detail:
         lines.append(f"    {verb.detail}")
