@@ -495,568 +495,640 @@ What to build (owns these paths — no other lane touches them): pyproject.toml 
 are the brief this lane was given and are reproduced in the sections above.)
 
 ---
+---
 
-# MD-4 — Intelligence protocol + `plan` verb + the discriminating good/bad pair
+# MD-2 — Spotify boundary: PKCE auth, `login`/`disconnect`/`whoami`, the one HTTP client, the removed-endpoint guard
 
-**Work item:** `music_deck-dws` · **Branch:** `lane/md-4` · **Date:** 2026-09-04
+**Work item:** `music_deck-2rj` · **Branch:** `lane/md-2` · **Verdict:** DONE
 
-`music-deck plan "<brief>"` now turns a brief in the caller's own words into a
-plan document, and prints the verbatim text of every prompt it sent to get it.
-Contracts closed: `boundary.v1` Core 1, 2, 3 and `cli.v1` Core 3, 5 (exit 3).
+**What a user can now do:** authorise music-deck against their own Spotify
+Development Mode app with `music-deck login` — PKCE, no client secret, a loopback
+redirect on a port bound at runtime — and have the token land at
+`$XDG_STATE_HOME/music-deck/token.json` at mode `0600`. `music-deck whoami`
+reports the signed-in account. `music-deck disconnect` deletes the token and
+every locally cached byte of Spotify content and prints the list of what it
+removed. Every Spotify failure now arrives as one of the frozen words from
+`cli.v1` Core 6 with a remedy the caller can act on, instead of an HTTP status
+code — including the two different things a `429` can mean and the two different
+things a `403` can mean. And music-deck cannot send a request to an endpoint
+Spotify has withdrawn: the guard refuses before the URL is built.
 
-The load-bearing part is not the verb. It is that `boundary.v1` Core 2 — *no
-Spotify content ever enters a prompt* — stopped being a promise and became a
-function anyone can run: `music_deck.check_plan_transcript(transcript,
-brief=...)`. It is proven by a pair that discriminates, both halves run through
-the same check and the same recording double: a plan built from the brief alone
-passes; the same run with fetched track metadata appended to the prompt fails,
-naming `boundary.v1 Core 2` and quoting what leaked.
+**Contract clauses closed:** `boundary.v1` Core 4, 5, 6, 7, 8 (the boundary's
+half of 8 — see the note to the steward below); `cli.v1` Core 4, 5, 6 for every
+code reachable from the Spotify boundary. `invalid_plan` is the one frozen code
+this lane cannot reach: `plan.v1` decides it and `apply` raises it (MD-5). It is
+recorded here as **N/A — not reachable from the Spotify boundary**, never
+silently skipped.
+
+---
 
 ## How the evidence below was produced
 
-Unless a block says otherwise, every command ran from the worktree root
-`/home/bkrabach/dev/hw-music-deck/lanes/md-4/amplifier-smart-tool-music-deck`
-on branch `lane/md-4`, and every block is pasted output, not a description of it.
+Two kinds of run, and the distinction matters:
 
-The conformance-kit run and the real-model runs used **non-editable installs**
-into throwaway virtualenvs (`/tmp/md4-kit`, `/tmp/md4-real`), so nothing depended
-on the checkout being on `sys.path`.
+- **The real binary, as a real process** — `.venv/bin/music-deck`, stdin closed,
+  a temporary state directory, and `$BROWSER` pointed at a script that leaves a
+  file behind if it is ever executed. This is what proves "never opens a
+  browser" and "refuses within 5 s".
+- **The real CLI in-process, against a mocked Spotify** — `music_deck.cli.main()`
+  with the one class that can open a socket (`UrllibTransport`) replaced by a
+  fake that answers queued bytes. A subprocess cannot be handed a fake
+  transport, so this is how a *particular Spotify response* is turned into a
+  particular envelope. Everything except the transport is the shipping path: the
+  same parser, the same dispatch, the same envelope, the same exit code.
 
-## Acceptance criteria
+No test and no evidence run in this lane reaches `api.spotify.com`. That is
+structural, not a convention: `tests/spotify_fakes.py::use_fake_transport`
+replaces `UrllibTransport` in **both** namespaces that construct one, and the
+fake raises on any request a test did not queue.
 
-### AC1 — the discriminating good/bad pair — **PASS**
+---
 
-> GIVEN the Recording intelligence, WHEN `plan "<brief>"` runs, THEN the boundary
-> check over the recorded prompts passes, AND WHEN the same run has fetched track
-> metadata appended to the prompt, THEN the same check FAILS naming
-> `boundary.v1` Core 2 — both outcomes pasted in DONE.md.
+## Criterion 1 — every named response produces the matching frozen code, on stdout, non-zero — **PASS**
 
-Run as one script so both halves are visibly the same check over the same
-double. `Recording.run` appends `request.prompt` on its first line, *at send
-time* — not reconstructed afterwards from the reply, which would make the
-transcript evidence about the double rather than about the tool.
+> "GIVEN a mocked Spotify HTTP layer, WHEN each of 401-expired,
+> 401-refresh-rejected, 403-allowlist, 403-premium-on-player-write,
+> 204-on-/me/player, 429-with-Retry-After, 429-with-reason-QUOTA_EXCEEDED, and a
+> playlist-items-forbidden response is returned, THEN the CLI emits
+> `{"error":{"code","message","remedy"}}` on stdout with the matching frozen code
+> from cli.v1 Core 6 and exits non-zero per Core 5."
 
-```
-$ uv run --extra dev python /tmp/md4_pair_demo.py
-
-==============================================================================
-GOOD -- a plan built from the brief alone
-==============================================================================
-plan.brief          : "upbeat 90s guitar songs for a Saturday morning"
-plan.plan_format    : 1
-plan.steps          : ['genre:alternative year:1990-1999', 'genre:britpop year:1993-1998']
-transcript entries  : 1
-transcript == what the double recorded at send time: True
-prompt characters   : 4031
-
-boundary.v1 Core 2 kept: every one of 1 prompt(s) is covered by the caller's own arguments and music-deck's static prompt text, with nothing left over.
-
-==============================================================================
-BAD -- the same run, with fetched track metadata appended to the prompt
-==============================================================================
-boundary.v1 Core 2 BROKEN in 1 of 1 prompt(s).
-  the clause: Every prompt sent to a model consists solely of the caller's own text and music-deck's own static schema and prompt text. No Spotify response, no cache, no token, and no data from a prior run ever enters a prompt.
-  boundary.v1 Core 2 broken by prompt 0: 197 characters came from neither the caller's own arguments nor music-deck's static prompt text (it carries a Spotify URI, a Spotify API field, something shaped like a Spotify id).
-    unaccounted-for text: '## Tracks I found on Spotify for this brief [{"id": "3n3Ppam7vgaVa1iaRUc9Lp", "name": "Mr. Brightside", "uri": "spotify:track:3n3Ppam7vgaVa1iaRUc9Lp", "popularity": 84, "duration_ms": 222075}]'
-
-==============================================================================
-Both halves through ONE call of the same pure function
-==============================================================================
-check_prompts(GOOD, allowed).ok = True
-check_prompts(BAD,  allowed).ok = False
-
-==============================================================================
-Cover, not denylist: a leak that looks like nothing in particular
-==============================================================================
-ok = False | recognisable as Spotify content: ()
-boundary.v1 Core 2 broken by prompt 0: 66 characters came from neither the caller's own arguments nor music-deck's static prompt text.
-    unaccounted-for text: 'For reference, the last playlist this user built was called Beach.'
-```
-
-**Why the BAD half really fails, rather than being arranged to.** The check works
-by *cover*, not by denylist: every allowed source text is removed from the
-prompt and whatever remains is the violation. The allowed set is exactly the two
-kinds of text Core 2 names — the parts of `src/music_deck/prompts/` and the
-caller's own arguments. A prompt assembled from anything else cannot come out
-clean, whatever it happens to contain. The fourth block above is the proof that
-this is not a Spotify-word-scanner wearing a disguise: a leak with nothing
-Spotify-shaped in it fails identically.
-
-Sensitivity, measured — a single character fails, whitespace does not:
+Each block below is one mocked response going in and the exact document
+`music-deck` printed on stdout coming out, with the exit code it returned.
+`no_active_device`, `premium_required` from a player write, and
+`playlist_items_unavailable` are decided by the *path*, and the verbs that
+request those paths belong to MD-3 and MD-4 — so those three ran through the
+real CLI with a stand-in handler making exactly the call the missing verb will
+make, rather than being asserted from inside the library.
 
 ```
-  leak=''           -> ok=True
-  leak=' '          -> ok=True
-  leak='\n\n\n'     -> ok=True
-  leak='Beach'      -> ok=False
-  leak='x'          -> ok=False
+--- 401 expired, nothing to refresh with -> not_authenticated
+    exit code: 2   requests sent: 1   waits: []
+    {
+      "error": {
+        "code": "not_authenticated",
+        "message": "The access token expired",
+        "remedy": "Run `music-deck login`."
+      }
+    }
+
+--- 401 then the refresh is rejected -> reauthorization_required
+    exit code: 2   requests sent: 2   waits: []
+    {
+      "error": {
+        "code": "reauthorization_required",
+        "message": "Spotify rejected the refresh token (400): Refresh token revoked. Spotify's own guidance is to discard it and send the user through authorisation again rather than retry.",
+        "remedy": "Run `music-deck login`."
+      }
+    }
+
+--- 403 with no reason -> not_allowlisted
+    exit code: 2   requests sent: 1   waits: []
+    {
+      "error": {
+        "code": "not_allowlisted",
+        "message": "Forbidden",
+        "remedy": "Add this Spotify account to your app's allowlist under User Management in the Spotify developer dashboard. See docs/spotify-app.md."
+      }
+    }
+
+--- 403 on a player write -> premium_required
+    exit code: 2   requests sent: 1   waits: []
+    {
+      "error": {
+        "code": "premium_required",
+        "message": "Player command failed: Premium required",
+        "remedy": "Playback writes need Spotify Premium on the account being controlled."
+      }
+    }
+
+--- 204 on GET /me/player -> no_active_device
+    exit code: 2   requests sent: 1   waits: []
+    {
+      "error": {
+        "code": "no_active_device",
+        "message": "Spotify has no active playback session for this account (204 No Content).",
+        "remedy": "Start playback on a Spotify device, or run `music-deck transfer` to move playback to one."
+      }
+    }
+
+--- 429 Retry-After: 2, then a second 429 -> rate_limited, one bounded retry
+    exit code: 2   requests sent: 2   waits: [2.0]
+    {
+      "error": {
+        "code": "rate_limited",
+        "message": "API rate limit exceeded",
+        "remedy": "Wait the number of seconds in `retry_after_s` and run the command again.",
+        "retry_after_s": 7.0
+      }
+    }
+
+--- 429 reason QUOTA_EXCEEDED -> quota_exceeded, never retried
+    exit code: 2   requests sent: 1   waits: []
+    {
+      "error": {
+        "code": "quota_exceeded",
+        "message": "Quota exceeded",
+        "remedy": "Your Spotify developer quota is exhausted; waiting will not clear it. Reduce how much this app requests, or try again later in the quota window.",
+        "reason": "QUOTA_EXCEEDED"
+      }
+    }
+
+--- 403 on GET /playlists/{id}/items -> playlist_items_unavailable
+    exit code: 2   requests sent: 1   waits: []
+    {
+      "error": {
+        "code": "playlist_items_unavailable",
+        "message": "Insufficient client scope",
+        "remedy": "Spotify only returns items for a playlist you own or collaborate on. Use one you own."
+      }
+    }
 ```
 
-The BAD fixture is not a doctored string either. `leaky_assemble_prompt` in
-`tests/test_plan_boundary.py` is the same static parts, the same caller brief, in
-the same order, joined the same way, with one fetched-metadata block added —
-the plausible mistake written out, so the check catches the thing it exists to
-catch rather than a strawman.
+All eight exit `2` — `cli.v1` Core 5's "refusal", which is where `errors.py`
+maps every frozen code.
 
-The pair also lives in the suite as `test_the_pair_discriminates`, which asserts
-both halves in one test — two separately-passing tests can both be vacuous in a
-way one test comparing them cannot.
+---
 
-### AC2 — offline: exit 0, zero requests to `api.spotify.com`, transcript verbatim — **PASS**
+## Criterion 2 — one bounded retry, then a refusal carrying `retry_after_s` — **PASS**
 
-> GIVEN no network and no token, WHEN `plan` runs with Scripted, THEN it exits 0,
-> issues zero requests to api.spotify.com, and the result carries `transcript`
-> with every prompt string sent, verbatim.
+> "WHEN a 429 with Retry-After: 2 is followed by a second 429, THEN exactly one
+> retry happened and the envelope carries retry_after_s."
 
-`plan` under `strace`, network syscalls only, with a positive control proving the
-tracer was live (the network *is* reachable from this lane — the control really
-connected, so "zero" is a property of `plan`, not of the host):
+From the `rate_limited` block above, verbatim:
 
 ```
-$ strace -f -e trace=network -o /tmp/md4-plan.strace .venv/bin/python /tmp/md4_offline.py
-plan produced, steps: 2 | transcript entries: 1
---- network syscall lines during plan: 0
-
-$ strace -f -e trace=network -o /tmp/md4-control.strace .venv/bin/python /tmp/md4_control.py
-control: connected
---- network syscall lines during control: 14
-4147766 connect(3, {sa_family=AF_UNIX, sun_path="/var/run/nscd/socket"}, 110) = -1 ENOENT (No such file or directory)
-4147766 connect(3, {sa_family=AF_INET, sin_port=htons(53), sin_addr=inet_addr("127.0.0.53")}, 16) = 0
-
-# the connect the tracer WOULD have caught, from the control:
-4147766 connect(3, {sa_family=AF_INET, sin_port=htons(443), sin_addr=inet_addr("35.186.224.24")}, 16) = 0
+--- 429 Retry-After: 2, then a second 429 -> rate_limited, one bounded retry
+    exit code: 2   requests sent: 2   waits: [2.0]
+    {
+      "error": {
+        "code": "rate_limited",
+        "message": "API rate limit exceeded",
+        "remedy": "Wait the number of seconds in `retry_after_s` and run the command again.",
+        "retry_after_s": 7.0
+      }
+    }
 ```
 
-Zero network syscalls of any kind — a stronger statement than "none to
-api.spotify.com", and an easier one to trust: a request cannot hide behind a
-redirect, a proxy, or a different hostname.
+- `requests sent: 2` — the original and exactly one retry.
+- `waits: [2.0]` — one wait, of exactly the length `Retry-After` asked for.
+- `retry_after_s: 7.0` — the *second* response's `Retry-After`, handed to the
+  caller rather than slept on.
 
-In the suite the same claim is enforced two more ways:
-`test_plan_makes_no_network_request_at_all` installs a socket/DNS tripwire that
-records and refuses every attempt (`network_tripwire == []`), and
-`test_the_plan_path_pulls_in_no_http_client` asserts a fresh subprocess that runs
-`plan` end to end has imported no `httpx`, `requests`, `urllib3`, or `aiohttp`.
+Two neighbouring cases are covered by tests in the same file, because "at most
+one bounded retry ... never an unbounded wait" is only half a promise without
+them:
 
-No token, no client ID, nothing signed in — and it works
-(`test_plan_needs_no_token_and_no_client_id`, which also asserts `plan` wrote
-nothing into the state directory).
+| Case | Behaviour | Test |
+|---|---|---|
+| `Retry-After: 600` | not slept on at all; refuses immediately carrying `retry_after_s: 600.0` | `test_429_with_a_retry_after_longer_than_the_bound_is_never_slept_on` |
+| `reason: QUOTA_EXCEEDED` | never retried, never slept on — waiting does not clear a quota | `test_429_with_reason_quota_exceeded_is_never_retried` |
 
-Transcript verbatim: `test_the_result_carries_every_prompt_sent_verbatim`
-asserts `result["transcript"] == recorder.prompts` and
-`result["transcript"][0] == assemble_prompt(BRIEF)`, and
-`test_the_brief_reaches_the_plan_verbatim` runs a brief with awkward whitespace,
-an em dash, quotes and a newline through and asserts it survives byte-for-byte
-into both the prompt and `plan["brief"]` (`plan.v1` Core 2).
+---
 
-### AC3 — Unconfigured: exit 3, the envelope names the precondition, `run` never invoked — **PASS**
+## Criterion 3 — no removed endpoint is ever constructed, statically or at runtime — **PASS**
 
-> GIVEN the Unconfigured intelligence with provider env scrubbed, WHEN `plan`
-> runs, THEN exit 3, the envelope names which precondition is missing and how to
-> fix it, and Unconfigured.run was never invoked.
+> "WHEN the code attempts any path in the removed families ... THEN the guard
+> refuses before any request is sent, AND a static test finds no such literal in
+> src/."
 
 ```
-$ .venv/bin/python   # Unconfigured, with assemble_prompt wrapped to count calls
-refused      : `plan` is model-backed and no model provider is configured.
-remedy       : Set ANTHROPIC_API_KEY (or OPENAI_API_KEY, GOOGLE_API_KEY, AZURE_OPENAI_API_KEY) and run again.
-exit code    : 3
-envelope     : {'error': {'code': 'no_provider_configured', 'message': '`plan` is model-backed and no model provider is configured.', 'remedy': 'Set ANTHROPIC_API_KEY (or OPENAI_API_KEY, GOOGLE_API_KEY, AZURE_OPENAI_API_KEY) and run again.', 'missing': 'provider'}}
-prompts assembled before the refusal : 0
-Unconfigured.run invocations         : 0
+RUNTIME -- every withdrawn family, refused before the request is built
+  refused      GET    /tracks                                              -> withdrawn February 2026
+  refused      GET    /albums                                              -> withdrawn February 2026
+  refused      GET    /artists                                             -> withdrawn February 2026
+  refused      GET    /episodes                                            -> withdrawn February 2026
+  refused      GET    /shows                                               -> withdrawn February 2026
+  refused      GET    /audiobooks                                          -> withdrawn February 2026
+  refused      GET    /chapters                                            -> withdrawn February 2026
+  refused      GET    /users/deckuser                                      -> withdrawn February 2026
+  refused      POST   /users/deckuser/playlists                            -> withdrawn February 2026
+  refused      GET    /browse/new-releases                                 -> withdrawn February 2026
+  refused      GET    /browse/categories                                   -> withdrawn February 2026
+  refused      GET    /markets                                             -> withdrawn February 2026
+  refused      GET    /recommendations                                     -> withdrawn November 2024
+  refused      GET    /audio-features/4iV5W9uYEdYUVa79Axb7Rh               -> withdrawn November 2024
+  refused      GET    /audio-analysis/4iV5W9uYEdYUVa79Axb7Rh               -> withdrawn November 2024
+  refused      GET    /artists/0TnOYISbd1XYRBk9myaseg/related-artists      -> withdrawn November 2024
+  refused      GET    /artists/0TnOYISbd1XYRBk9myaseg/top-tracks           -> withdrawn February 2026
+  refused      POST   /playlists/37i9dQZF1DXcBWIGoYBM5M/tracks             -> withdrawn February 2026
+  refused      PUT    /playlists/37i9dQZF1DXcBWIGoYBM5M/followers          -> withdrawn February 2026
+  refused      PUT    /me/tracks                                           -> withdrawn February 2026
+  refused      DELETE /me/albums                                           -> withdrawn February 2026
+  refused      PUT    /me/following                                        -> withdrawn February 2026
+  refused      GET    /me/tracks/contains                                  -> withdrawn February 2026
+  refused      GET    /me/following/contains                               -> withdrawn February 2026
+  requests that reached the transport: 0
+
+RUNTIME -- the surviving surface still goes through (boundary.v1 Core 7 names four of these)
+  allowed      GET    /me
+  allowed      GET    /search
+  allowed      GET    /tracks/4iV5W9uYEdYUVa79Axb7Rh
+  allowed      GET    /playlists/37i9dQZF1DXcBWIGoYBM5M/items
+  allowed      POST   /me/playlists
+  allowed      PUT    /me/library
+  allowed      GET    /me/library/contains
+  allowed      GET    /me/player
+
+STATIC -- no withdrawn path literal anywhere in src/, outside the fenced table
+  files scanned: 9 (src/music_deck/__init__.py, src/music_deck/auth.py, src/music_deck/check.py, src/music_deck/cli.py, src/music_deck/errors.py, src/music_deck/http.py, src/music_deck/manifest.py, src/music_deck/verbs/__init__.py, src/music_deck/verbs/auth_verbs.py)
+  absent    batch GET /tracks
+  absent    batch GET /albums
+  absent    batch GET /artists
+  absent    batch GET /episodes
+  absent    batch GET /shows
+  absent    batch GET /audiobooks
+  absent    batch GET /chapters
+  absent    /users/{id}*
+  absent    /browse/*
+  absent    /markets
+  absent    /recommendations
+  absent    /audio-features
+  absent    /audio-analysis
+  absent    related-artists
+  absent    top-tracks
+  absent    /playlists/{id}/tracks
+  absent    /playlists/{id}/followers
+  absent    /me/<type>/contains
+  absent    a client secret (boundary.v1 Core 4)
+  total offending literals: 0
 ```
 
-The same refusal at the binary, environment scrubbed the way the conformance kit
-scrubs it, stdin closed:
+`requests that reached the transport: 0` is the load-bearing line: the guard runs
+in `SpotifyClient.request` **before** the URL is built, so a withdrawn path
+cannot reach a socket even once.
+
+Two things about the static half, both deliberate:
+
+- `src/music_deck/http.py` necessarily contains every withdrawn path — it is the
+  table of what to refuse. That table sits between two marker comments, and the
+  scan excises exactly that region. `tests/test_removed_endpoints.py` asserts the
+  markers exist and that exactly one file carries them, so deleting the fence
+  breaks the test rather than silently disabling it.
+- The scan also looks for `client_secret`, which is `boundary.v1` Core 4's "No
+  client secret anywhere". Zero hits.
+
+`GET /me/tracks`, `/me/albums`, `/me/episodes`, `/me/shows`, `/me/audiobooks` and
+`GET /me/following` are **allowed** on purpose: February 2026 removed the
+type-specific library *writes* and *contains* endpoints, not the reads
+(`investigation/B-spotify-api-reality.md` sections 4.4 and 4.6). `library list`
+and `following` (MD-3/MD-5) need those reads. The guard refuses `PUT`/`DELETE` on
+those paths and any method on `/me/<type>/contains`.
+
+The whole thing as tests — 69 of them, one per withdrawn call, one per surviving
+call, one per literal:
 
 ```
-$ env -u ANTHROPIC_API_KEY -u OPENAI_API_KEY -u GOOGLE_API_KEY -u GEMINI_API_KEY \
-      -u AZURE_OPENAI_API_KEY -u MUSIC_DECK_PROVIDER \
-      music-deck plan "upbeat 90s guitar songs for a Saturday morning" < /dev/null
+$ uv run --extra dev pytest tests/test_removed_endpoints.py -q
+.....................................................................    [100%]
+69 passed in 0.06s
+```
+
+---
+
+## Criterion 4 — `login` completes, and leaves a `0600` token at the contracted path — **PASS**
+
+> "WHEN `login` completes in a test harness, THEN token.json exists at
+> $XDG_STATE_HOME/music-deck/ with mode 0600 and the redirect URI used is
+> http://127.0.0.1:<port>."
+
+The harness stands in for two things only: the browser (which fetches the
+redirect Spotify would send it to) and Spotify's token endpoint. The PKCE pair,
+the authorisation URL, the loopback receiver on a real ephemeral port, the code
+exchange, the file write and its mode are the shipping code.
+
+```
+-rw------- 1 bkrabach bkrabach 324 Sep  4 08:37 /tmp/md2-demo-6cve7bio/state/music-deck/token.json
+AUTHORIZE URL (truncated): https://accounts.spotify.com/authorize?client_id=demo-client-id&response_type=code&redirect_uri=http%3A%2F%2F127.0.0.1 ...
+
+login RESULT:
+{
+  "signed_in": true,
+  "redirect_uri": "http://127.0.0.1:38063",
+  "token_path": "/tmp/md2-demo-6cve7bio/state/music-deck/token.json",
+  "token_mode": "0600",
+  "scopes": [
+    "user-read-private"
+  ],
+  "client_id_source": "environment MUSIC_DECK_CLIENT_ID"
+}
+account: {"id": "demo-user", "display_name": "Demo User", "uri": "spotify:user:demo-user", "external_urls": {"spotify": "https://open.spotify.com/user/demo-user"}}
+
+ls -l of the token file, as the OS reports it:
+
+no client secret was ever sent -- the token exchange body was:
+    grant_type=authorization_code&code=demo-code&redirect_uri=http%3A%2F%2F127.0.0.1%3A38063&client_id=demo-client-id&code_verifier=zUQEivJZWKu6zBJvVfG-Vvvnajjh5PKcGUggtRDmh8GolSCx6nnRJEUDU4gFv2XzVNConQNx8CRkkAdkXZZw8g
+```
+
+(The `ls -l` line appears first because the subprocess writes straight to the
+file descriptor while Python's own output is still buffered. It is the same run.)
+
+What that output settles, line by line:
+
+| `boundary.v1` Core 4 says | The run shows |
+|---|---|
+| "Auth is PKCE only" | the exchange body carries `code_verifier`, no `client_secret`, and no `Authorization` header |
+| "with the caller's own client ID" | `client_id_source: environment MUSIC_DECK_CLIENT_ID` |
+| "Redirect URI is `http://127.0.0.1:<ephemeral port>`, never `localhost`" | `redirect_uri: http://127.0.0.1:38063` — a port the kernel handed out at run time |
+| "The token lives at `$XDG_STATE_HOME/music-deck/token.json`" | `/tmp/md2-demo-6cve7bio/state/music-deck/token.json`, with `XDG_STATE_HOME=/tmp/md2-demo-6cve7bio/state` |
+| "mode `0600`" | `-rw------- 1 bkrabach bkrabach` |
+| "no credential ships with the tool" | `login` with no client ID configured refuses `usage` before opening anything (Criterion 5 output) |
+
+`cli.v1` Core 4's "every Spotify item carries its own `external_urls.spotify`" is
+visible in the same output: the account object came back from the mocked Spotify
+*without* `external_urls`, and music-deck derived
+`https://open.spotify.com/user/demo-user` from the item's own URI.
+
+Three neighbouring `login` behaviours are proved by tests rather than by this
+happy path, because a login verb that only works when everything goes right is
+the one that hangs at 2 a.m.:
+
+| Case | Behaviour | Test |
+|---|---|---|
+| No browser opened **and** stdin closed | fails loud in well under a second, stores nothing | `test_login_with_no_browser_and_no_terminal_fails_loud_and_fast` |
+| Browser opened, nobody ever completes it | stops waiting at the deadline; never hangs | `test_login_stops_waiting_rather_than_hanging` |
+| Callback carries the wrong `state` | refuses, stores nothing | `test_login_refuses_a_callback_whose_state_does_not_match` |
+
+---
+
+## Criterion 5 — an unauthenticated verb, stdin closed: `not_authenticated`, under 5 s, no browser — **PASS**
+
+> "WHEN any verb other than `login` runs unauthenticated with stdin closed, THEN
+> it fails `not_authenticated` naming `music-deck login` within 5s and never
+> opens a browser."
+
+This one is the real binary as a real process. `$BROWSER` points at a script that
+`touch`es a sentinel file if it is ever run, so "never opens a browser" is
+checked, not assumed.
+
+## Criterion 6 — `disconnect` leaves nothing behind, and says what it took — **PASS**
+
+> "WHEN `disconnect` runs, THEN token.json is gone, no Spotify content remains
+> under $XDG_STATE_HOME/music-deck/, and stdout names what was deleted."
+
+Both criteria in one session:
+
+```
+== boundary.v1 Core 5 -- an unauthenticated verb, stdin closed, browser watched ==
+$ music-deck whoami   < /dev/null
+music-deck is not signed in to Spotify: there is no token at /tmp/md2-cli-WUVsHC/state/token.json.
 {
   "error": {
-    "code": "no_provider_configured",
-    "message": "`plan` is model-backed and no model provider is configured.",
-    "remedy": "Set ANTHROPIC_API_KEY (or OPENAI_API_KEY, GOOGLE_API_KEY, AZURE_OPENAI_API_KEY), or pin one with MUSIC_DECK_PROVIDER. Every other verb runs with no provider at all.",
-    "missing": "provider"
+    "code": "not_authenticated",
+    "message": "music-deck is not signed in to Spotify: there is no token at /tmp/md2-cli-WUVsHC/state/token.json.",
+    "remedy": "Run `music-deck login`."
   }
 }
-EXIT=3
-# stderr: `plan` is model-backed and no model provider is configured.
+exit code: 2
+elapsed: .056741975 s   (acceptance bar: under 5s)
+browser opened: no (the watched $BROWSER script never ran)
+
+== login with no client ID configured: a refusal, not a browser window ==
+$ music-deck login   < /dev/null
+No Spotify client ID is configured. music-deck ships none by design: you run it against your own Spotify app, under your own quota.
+{
+  "error": {
+    "code": "usage",
+    "message": "No Spotify client ID is configured. music-deck ships none by design: you run it against your own Spotify app, under your own quota.",
+    "remedy": "Set MUSIC_DECK_CLIENT_ID (or SPOTIFY_CLIENT_ID), or put {\"client_id\": \"...\"} in /tmp/md2-cli-WUVsHC/config/config.json. See docs/spotify-app.md."
+  }
+}
+exit code: 2
+browser opened: no
+
+== boundary.v1 Core 6 -- disconnect deletes the token and every cached byte, and says so ==
+before:
+    /tmp/md2-cli-WUVsHC/state/cache/playlist-37i9dQZF1DXcBWIGoYBM5M.json
+    /tmp/md2-cli-WUVsHC/state/last-403.json
+    /tmp/md2-cli-WUVsHC/state/token.json
+$ music-deck disconnect   < /dev/null
+{
+  "disconnected": true,
+  "deleted": [
+    "/tmp/md2-cli-WUVsHC/state/cache/playlist-37i9dQZF1DXcBWIGoYBM5M.json",
+    "/tmp/md2-cli-WUVsHC/state/last-403.json",
+    "/tmp/md2-cli-WUVsHC/state/token.json"
+  ],
+  "deleted_count": 3,
+  "state_dir": "/tmp/md2-cli-WUVsHC/state",
+  "token_path": "/tmp/md2-cli-WUVsHC/state/token.json",
+  "remaining": [],
+  "summary": "Deleted 3 file(s) from /tmp/md2-cli-WUVsHC/state. No Spotify content remains on disk.",
+  "note": "The config file was left in place -- it holds your own client ID, which is not Spotify content. Delete it by hand if you want it gone."
+}
+exit code: 0
+after:
+    (no output above this line means nothing is left)
+
+== boundary.v1 Core 6 second sentence -- check still exits 0 with nothing connected ==
+$ music-deck check < /dev/null | head -c 0; music-deck check --  (findings only)
+{
+  "token_file": false,
+  "ready": {
+    "spotify_verbs": false,
+    "plan": true
+  },
+  "findings": [
+    "No Spotify client ID is configured. music-deck ships none by design -- register your own app and set MUSIC_DECK_CLIENT_ID. See docs/spotify-app.md.",
+    "Not signed in to Spotify. Run `music-deck login`."
+  ]
+}
+check exit code: 0
+
+== cli.v1 Core 1 -- the three verbs this lane built are no longer marked unbuilt ==
+    music-deck login  (deterministic)
+        Authorise against your own Spotify app, once, via PKCE in a browser.
+    --
+    music-deck disconnect  (deterministic)
+        Delete the stored token and every locally cached byte of Spotify content.
+    --
+    music-deck whoami  (deterministic)
+        Report the signed-in Spotify account.
+    verbs still marked NOT IMPLEMENTED:
+      37
 ```
 
-**"Before any prompt is built" is proven twice, independently**, because a tool
-that assembles a prompt and *then* refuses looks identical from outside:
+- `elapsed: .056 s` against a 5 s bar; `browser opened: no`.
+- The remedy names `music-deck login` verbatim, as `boundary.v1` Core 5 requires.
+- `disconnect` removed all three files — the token, the cached playlist, and the
+  403 record — listed each one by absolute path, and the `find` afterwards prints
+  nothing at all.
+- `check` still exits `0` afterwards and reports "Not signed in to Spotify", which
+  is `boundary.v1` Core 6's second sentence.
+- The config file is left in place on purpose: the client ID is the caller's own,
+  is not Spotify content, and is the thing they would have to go and find again.
+  `disconnect` says so in its own output.
 
-1. `Unconfigured.run` records the call in `run_calls` **and** raises
-   `AssertionError` if it is ever reached — so a caller that swallowed the
-   exception would still leave the evidence behind (`run_calls == []` above).
-2. `test_no_prompt_is_ever_assembled` replaces
-   `music_deck.verbs.plan.assemble_prompt` with a tripwire that fails the test if
-   called at all. It is not called.
+An end-to-end test covers the case that matters more than the fixture above: a
+real refused request writes the 403 record, and `disconnect` takes that away too
+(`test_disconnect_deletes_the_403_record_a_real_run_leaves_behind`).
 
-In `verbs/plan.py` the ordering is one line of code apart and commented as such:
-the argument check, then `engine.preflight(provider)`, then — only then —
-`assemble_prompt`.
+---
 
-The precondition vocabulary is closed (`PRECONDITIONS`) and every branch is
-tested (`tests/test_plan_refusal.py`), each naming its own fix:
-
-| `missing` | when | the remedy names |
-|---|---|---|
-| `provider` | nothing credentialled, nothing pinned | the four credential env vars, and `MUSIC_DECK_PROVIDER` |
-| `provider` | `MUSIC_DECK_PROVIDER` names something unknown | the providers music-deck knows |
-| `credentials` | a provider is pinned but has no credential here | that provider's own env var |
-| `provider_sdk` | credential resolves, client library absent | `uv pip install "music-deck[anthropic]"` |
-| `engine` | credential and SDK both present, engine absent | the `amplifier-agent` install line |
-
-`cli.v1` Core 3 names three preconditions; `engine` is a fourth of the same kind
-(the substrate itself), refusing the same way with the same exit code. Recorded
-under "Interpretations" below.
-
-### AC4 — a base install imports no provider SDK — **PASS**
-
-> GIVEN base install without any provider extra, WHEN `import music_deck` runs,
-> THEN no provider SDK is imported.
-
-Checked for four entry points, and extended to the engine library as well —
-importing `amplifier_agent_lib` rewrites `AMPLIFIER_HOME` in the caller's own
-environment, which is not something forty deterministic verbs should be able to
-do by being imported:
-
-```
-  import music_deck                ->  []
-  import music_deck.intelligence   ->  []
-  import music_deck.verbs.plan     ->  []
-  from music_deck.cli import main  ->  []
-```
-
-(The probe lists any loaded module whose top-level package is one of
-`anthropic`, `openai`, `google`, `cohere`, `mistralai`, `amplifier_agent_lib`,
-`amplifier_agent_cli`, `httpx`, `requests`. Empty list = none of them loaded.)
-
-`test_preflight_answers_without_importing_anything` goes one further: even
-*asking* whether a provider is available imports nothing, because `preflight`
-uses `importlib.util.find_spec`, which answers without importing.
-
-Provider SDKs are extras in `pyproject.toml` (`anthropic`, `openai`, `gemini`,
-`azure-openai`), never base dependencies. Base dependencies are unchanged:
-`pyyaml` only.
-
-### AC5 — every prompt string is from `src/music_deck/prompts/` or the caller's own arguments — **PASS**
-
-> Every prompt string is either from src/music_deck/prompts/ or from the caller's
-> own arguments — asserted by the boundary check.
-
-This is what the cover check asserts, so it is AC1's mechanism seen from the
-other side. `test_every_prompt_is_covered_by_prompts_directory_plus_caller_arguments`
-asserts `uncovered(prompt, [*static_prompt_texts(), BRIEF]) == ""`.
-
-The design that makes it true rather than lucky: `prompts/plan.md` is split into
-named parts (`instructions`, `brief`, `context`) by `=== SECTION: ===` markers,
-and `assemble_prompt` interleaves *only* those parts with the caller's verbatim
-text. There is no format string, no f-string, no heading defined in Python. A
-sentence added to `prompts/plan.md` is allowed in a prompt; a sentence added
-anywhere else in the source is not, and the check will say so.
-
-Two deliberate consequences, both tested:
-
-- **A caller who pastes Spotify content into `--context` is not a leak.** Core 2
-  allows "the caller's own text", all of it, whatever it contains, and
-  `boundary.v1`'s own reserved question ("whether a plan may carry a Spotify ID
-  the caller typed in themselves") is open.
-  `test_a_caller_who_pastes_spotify_content_into_context_is_not_a_leak` records
-  the decided behaviour, and asserts the *same* transcript checked without
-  declaring that context **fails** — which is what makes the pass a statement
-  about provenance rather than about the characters.
-- **There is no draft-and-repair round.** The obvious way to make a model's JSON
-  reliable is to hand a rejected draft back with the findings. `plan` does not,
-  because a repair prompt would carry the model's own previous output — neither
-  the caller's text nor music-deck's static prompt text. It would fail this
-  tool's own check, correctly. One turn, one prompt, one transcript entry; a
-  draft that does not validate is a refusal naming the offending path.
-
-`plan` also runs the check against itself before returning, so a future change
-that leaks fails loudly at the point of the leak instead of shipping a plan
-nobody looked at.
-
-### AC6 — pytest green — **PASS**
+## Criterion 7 — pytest green — **PASS**
 
 ```
 $ uv run --extra dev pytest -q
-........................................................................ [ 51%]
-.....................................................................    [100%]
-141 passed in 4.18s
+........................................................................ [ 32%]
+........................................................................ [ 65%]
+........................................................................ [ 97%]
+.....                                                                    [100%]
+221 passed in 5.30s
 ```
 
-103 of those are MD-1's and still pass unchanged; 38 are new
-(`tests/test_plan_boundary.py`, `tests/test_plan_refusal.py`).
+121 of those 221 are new in this lane (MD-1's three files hold the other 100):
 
-The upstream Smart Tools kit is still green against a non-editable install —
-the merge gate:
+| File | Tests | What it holds to account |
+|---|---|---|
+| `tests/test_http_refusals.py` | 24 | every refusal reachable from the boundary, produced by a mocked response and read back off stdout |
+| `tests/test_removed_endpoints.py` | 69 | `boundary.v1` Core 7, static and runtime, plus the surviving surface |
+| `tests/test_auth.py` | 19 | PKCE, the redirect URI, the token file and its mode, `login` end to end, and the shipped binary refusing with stdin closed |
+| `tests/test_disconnect.py` | 9 | `boundary.v1` Core 6, checked against the directory rather than the report |
+| `tests/spotify_fakes.py` | — | the shared fake transport, token fixtures and CLI runners MD-3/4/5 should reuse |
+
+The upstream Smart Tools kit — PINS.md's merge gate — is still green at the
+pinned rev:
 
 ```
-$ PATH=/tmp/md4-kit/.venv/bin:$PATH uv run .../amplifier-smart-tools/conformance/run.py <repo-root>
-smart-tools conformance :: .../amplifier-smart-tool-music-deck
+$ PATH="$PWD/.venv/bin:$PATH" uv run <amplifier-smart-tools>/conformance/run.py .
   PASS descriptor-present             smart-tool.json names the manifest and how to launch the CLI
   PASS manifest-present               SMART_TOOL.md found at src/music_deck/SMART_TOOL.md
   PASS manifest-frontmatter-parses    frontmatter parsed
   PASS manifest-fields-closed         only recognised fields present
   PASS manifest-required-fields       every required field carries content
   PASS manifest-field-shapes          every field has the shape the spec gives it
-  PASS manifest-name-format           name='music-deck'
-  PASS manifest-version-matches-package manifest 0.1.0 == pyproject.toml [project].version 0.1.0
-  PASS manifest-requires-shape        1 requires entry(ies) well-formed
-  PASS manifest-single-per-root       exactly one manifest under root
-  PASS loads-without-provider         '--help' exits 0 with provider env scrubbed
-  PASS help-flags-supported           both '-h' and '--help' exit 0
+  PASS manifest-name-format           name is a slug
+  PASS manifest-version-matches-package
+  PASS manifest-requires-shape
+  PASS manifest-single-per-root
+  PASS loads-without-provider
+  PASS help-flags-supported
   PASS deterministic-capability-runs  deterministic 'check' runs (exit 0) with provider env scrubbed
   PASS failure-exits-non-zero         bad invocation '__conformance_no_such_verb__' exits 2
   PASS no-hang-stdin-closed           'check' completes with stdin closed
-VERDICT: PASS (15 pass, 0 fail, 0 skip)
+
+verdict: PASS   counts: {'pass': 15, 'fail': 0, 'skip': 0}
 ```
 
-## Beyond the bar: a real model turn through the production `Intelligence`
+---
 
-The acceptance criteria are met with the doubles and need no model. A provider
-key *was* present in this lane's environment, so the optional smoke was
-attempted — and it works. `amplifier-agent` and `anthropic` were installed into
-a throwaway venv (`/tmp/md4-real`); neither is in this repo's base dependencies.
+## For the manager — files this lane does not own
 
-A brief deliberately unlike the worked example in `prompts/plan.md`, so the
-result cannot be the model copying the example back:
+**`tests/test_cli_shape.py` (MD-1's) — two tests changed. This was unavoidable,
+and one of them was a live hazard.**
 
-```
-$ AMPLIFIER_AGENT_HOME=/tmp/md4-real/agent-home .venv/bin/python smoke2.py
-{
-  "plan_format": 1,
-  "brief": "moody Ethiopian jazz and desert blues for writing on a rainy afternoon, about an hour, nothing with vocals in English",
-  "target": {"kind": "new", "name": "Rainy Afternoon Writing", ...},
-  "steps": [
-    {"search": "genre:ethio-jazz", "type": "track", "take": 15,
-     "why": "the core moody Ethiopian jazz sound the brief asks for"},
-    {"search": "artist:Mulatu Astatke", "type": "track", "take": 10,
-     "why": "the genre's defining voice, instrumental and atmospheric"},
-    {"search": "genre:desert blues", "type": "track", "take": 15,
-     "why": "the hypnotic, rainy-day desert blues side of the brief"},
-    {"search": "artist:Tinariwen", "type": "track", "take": 10,
-     "why": "a desert blues touchstone, sung in Tamashek not English"},
-    {"search": "artist:Ali Farka Toure", "type": "track", "take": 10,
-     "why": "more desert blues warmth, vocals in Songhay/Bambara"}
-  ],
-  "rules": {"exclude_artists": [], "exclude_title_terms": ["remix", "live", "radio edit"],
-            "dedupe": "by_title_and_primary_artist", "order": "shuffle"},
-  "size": {"minutes": 60, "tolerance_pct": 10}
-}
+That file's `test_every_unbuilt_verb_refuses_loudly_rather_than_exiting_zero` is
+parametrised over every verb except `check` and `manifest`, and its `run()`
+helper passes **no** `MUSIC_DECK_STATE_DIR`. Before this lane, `disconnect` was a
+stub. Now it is real — so that test was, on its first run here, executing
+`music-deck disconnect` against the *real* `~/.local/state/music-deck` of
+whoever ran the suite. (Nothing was lost: this machine had no such directory.
+Verified after the fact — `ls: cannot access '/home/bkrabach/.local/state/music-deck/': No such file or directory`.)
 
-transcript entries: 1
-boundary.v1 Core 2 kept: every one of 1 prompt(s) is covered by the caller's own arguments and music-deck's static prompt text, with nothing left over.
-```
+The change is the smallest one that fixes both the staleness and the hazard:
 
-It honoured "about an hour" as `size.minutes: 60`, and "nothing with vocals in
-English" in its reasoning rather than only in prose — and every step names music
-by search expression, never by ID, which is `plan.v1` Core 3.
+- Added an `IMPLEMENTED_VERBS` tuple next to `ALL_VERBS`, with a comment saying
+  each landing lane adds its verbs to it, and why skipping is required rather
+  than merely tolerable.
+- That parametrised test now excludes `IMPLEMENTED_VERBS` instead of the
+  hard-coded `("check", "manifest")`.
+- `test_an_unbuilt_verb_reports_not_implemented_when_its_arguments_are_valid`
+  used `whoami` as its example of an unbuilt verb; it now uses `devices`.
 
-The whole thing through the binary, including `--output`:
+Coverage for the three verbs did not shrink — it moved to `tests/test_auth.py`
+and `tests/test_disconnect.py`, which drive them against a temporary state
+directory.
 
-```
-$ music-deck plan "three or four Nick Drake-adjacent folk songs for a quiet evening" \
-      --output /tmp/md4-real/plan.json < /dev/null
-EXIT=0
-top-level keys : ['plan', 'transcript']
-transcript     : 1 entry; 4049 chars
-plan.steps     : ['artist:"Nick Drake"', 'genre:"folk" year:1968-1974',
-                  'artist:"John Martyn" OR artist:"Vashti Bunyan" OR artist:"Bert Jansch"']
-plan.brief     : "three or four Nick Drake-adjacent folk songs for a quiet evening"
+**`src/music_deck/check.py` (MD-1's) — one small change recommended, not made.**
+The manager note asked for `SPOTIFY_CLIENT_ID` as a documented alias and for
+`check`'s `source` field to name whichever variable was used. The resolver lives
+in `auth.resolve_client_id()` (env `MUSIC_DECK_CLIENT_ID` → env
+`SPOTIFY_CLIENT_ID` → config file), returning `(value, source)` and never
+raising. `check._client_id_fact` still has its own copy that knows only the
+primary variable, so today `check` reports `"present": false` for a user who set
+only the alias — while `login` works for them. The fix is four lines inside
+`_client_id_fact`, calling `resolve_client_id()`. **Note the import direction:**
+`auth` imports `check` for the path helpers, so `check` must do the import inside
+the function body, not at module level, or the two will import in a cycle.
 
-# --output writes a bare plan `apply` can read:
-keys: ['plan_format', 'brief', 'target', 'steps', 'rules', 'size']
-has transcript: False
+**`src/music_deck/__init__.py` (MD-1's) — not touched.** `login`, `disconnect`
+and `whoami` are reachable from the library as
+`from music_deck.verbs.auth_verbs import login, disconnect, whoami`, which
+satisfies `cli.v1` Core 7. Re-exporting them from the package root would be one
+line and a nicer surface; that is MD-1's file to change.
 
-# stderr lines: 0   (cli.v1 Core 4 -- stdout carries exactly one JSON document)
+**Codes outside the frozen vocabulary.** `cli.v1` Core 6 freezes the ten codes a
+*caller* can provoke. Four failures here are not that, and this lane did not fork
+the vocabulary to name them — they all fall through `errors.exit_code_for` to
+exit `1`, which is what Core 5 leaves that code for:
 
-# the boundary check, run over what the CLI printed, by a reader who never saw the source:
-boundary.v1 Core 2 kept: every one of 1 prompt(s) is covered by the caller's own arguments and music-deck's static prompt text, with nothing left over.
-```
+| Code | When | Why not frozen |
+|---|---|---|
+| `removed_endpoint` | the guard caught music-deck about to build a withdrawn path | a defect in music-deck, not a conversation with the user |
+| `no_browser` | `login` could open no browser and stdin is closed | describes the machine, not the Spotify account |
+| `spotify_error` | an upstream status with no frozen meaning | genuinely "a failure with no code" |
+| `network_unreachable` | the socket never connected | same |
 
-That last block is the point of Core 3 in one command: the transcript is an
-output, so the boundary is checkable by whoever holds the output.
+One judgement call worth the steward's eye: **`login` with no client ID
+configured refuses with `usage` (exit 2)**. Core 5 puts "invalid input" at exit 2
+and a run with no client ID has been given no usable input, so the exit code is
+right; but `usage` will read to an agent as "re-read `--help`" when the real
+remedy is "set an environment variable". If `errors.py` ever grows a
+`not_configured` code, this is its first caller.
 
-## Interpretations this lane had to make, and why
+**`boundary.v1` Core 8, one thing to look at.** Core 8 enumerates what may
+persist: "the token, the config file, and plan/transcript artifacts". This lane
+writes a fourth file — `$XDG_STATE_HOME/music-deck/last-403.json` — which MD-1's
+`check.py` already reads and reports, and which is the *only* signal Spotify
+gives that an account is not on the app's allowlist. It holds three fields: a
+timestamp, Spotify's own reason string, and the endpoint **with every Spotify id
+redacted** (`/albums/{id}`), so it contains no Spotify content; and `disconnect`
+deletes it, proved end to end. If the steward reads Core 8's list as exhaustive
+rather than illustrative, this is the one line to rule on — it is a five-word
+clause change, not a code change.
 
-1. **`plan` takes its brief as a positional argument, not `--brief`.** The item
-   and GOAL both spell it `plan <brief>` / `music-deck plan "<brief>"`; MD-1's
-   stub had `--brief`. The positional won. **This makes one line of
-   `SMART_TOOL.md` stale** — see "Notes for the manager" below.
+---
 
-2. **The result is `{plan, transcript}`, and `--output` writes the plan alone.**
-   `boundary.v1` Core 3 makes the transcript part of the answer, so stdout
-   carries both; but `apply` needs a bare `plan.v1` document, so `--output`
-   writes that. This also makes one line of `SMART_TOOL.md` stale (same note).
+## Handoffs for MD-3, MD-4, MD-5
 
-3. **A fourth precondition, `engine`.** `cli.v1` Core 3 names three (SDK, no
-   provider, no credentials). A missing engine library is a fourth way to have
-   "no usable model substrate" — Core 3's own opening words — and refuses
-   identically (exit 3, named, with a remedy). No contract change proposed: the
-   clause's list reads as examples of the same condition, not as a closed set.
-   Flagging it in case the steward reads it as closed.
+- **One entry point.** `from music_deck.verbs.auth_verbs import spotify_client`,
+  then `spotify_client().get("/tracks/{id}")`. It refuses `not_authenticated`
+  before any request when there is no token, renews an expired access token by
+  itself, and raises the frozen refusals as `MusicDeckError` — the CLI already
+  turns those into the envelope and the exit code. Do not build a second client.
+- **`paginate(path, limit=…)`** already handles the February 2026 search cap
+  (10 per page, default 5) and the 50-per-page cap everywhere else.
+- **Links are automatic.** Every payload that comes back has been through
+  `surface_links`; do not add `external_urls` by hand.
+- **The token file's shape** is documented as a table in `auth.py`'s module
+  docstring. `check.py` reads it. Do not add keys without updating both.
+- **Tests:** `tests/spotify_fakes.py` gives you `FakeTransport`, `install_token`,
+  `token_document`, `run_cli`, `run_probe`, `record_sleeps`. Use `run_probe` when
+  the verb you need does not exist yet, and delete the probe when it does.
+- **Add your verbs to `IMPLEMENTED_VERBS`** in `tests/test_cli_shape.py` as they
+  land, for the reason recorded above.
 
-4. **The engine is not a music-deck extra.** It was tried and it does not work:
-   `amplifier-agent` is not on PyPI (needs a git direct reference and
-   `allow-direct-references`) and requires Python >= 3.12, while music-deck
-   declares >= 3.11. Measured:
+---
 
-   ```
-   $ uv sync --extra dev   # with amplifier-agent added to the anthropic extra
-   ... conclude that amplifier-agent==0.17.0 cannot be used.
-   ... your project's requirements are unsatisfiable.
-   hint: The `requires-python` value (>=3.11) includes Python versions that are not
-   supported by your dependencies (e.g., amplifier-agent==0.17.0 only supports >=3.12).
-   ```
-
-   Declaring it would break `uv sync` for a 3.11 caller who only ever wanted the
-   deterministic verbs. So provider *SDKs* are extras (`music-deck[anthropic]`
-   etc.) and the engine is installed alongside, which the `engine` refusal names
-   explicitly. Raising `requires-python` to `>=3.12` is a steward call, not a
-   lane call — see "Notes for the manager".
-
-5. **No repair round, deliberately** (reasoning under AC5). It costs some
-   robustness against a model that returns malformed JSON. It buys an airtight
-   Core 2: every prompt is caller text plus static text, with no exception that
-   would have to be argued about later.
-
-6. **`plan_format` and `brief` are music-deck's to write, not the model's.** The
-   prompt asks for `target`, `steps`, `rules` and optional `size`; `compose_plan`
-   adds `plan_format: 1` and the caller's `brief` verbatim. `plan.v1` Core 2's
-   "the caller's text, verbatim" is then true by construction. If the model
-   echoes either field it must agree, or the plan is refused — a paraphrased
-   brief is a plan the caller cannot check against what they asked for.
-
-7. **The plan validator here is the minimal stand-in the brief allows.**
-   `music_deck.plan_schema.validate_plan` (MD-5, `music_deck-v0b`) had not landed
-   when this branched from `main` @ `ee01a5f`. `validate_plan_document` imports it
-   if present and falls back to a local check of `plan.v1` Core 1–6 otherwise, so
-   **MD-5 replaces the local check by landing — no edit to this lane's files is
-   needed.** The local check accepts either shape from MD-5 (raising, or
-   returning findings).
-
-## Notes for the manager (files this lane does not own)
-
-1. **`src/music_deck/SMART_TOOL.md` — two stale lines** (MD-1 owns this file, so
-   this lane did not edit it). Its "Worked invocations" block says:
-
-   ```
-   music-deck plan --brief "upbeat 90s guitar songs for a Saturday morning" > plan.json
-   music-deck apply --plan plan.json
-   ```
-
-   Both lines are now wrong: the brief is positional, and stdout carries
-   `{plan, transcript}` rather than a bare plan. The working equivalent is:
-
-   ```
-   music-deck plan "upbeat 90s guitar songs for a Saturday morning" --output plan.json
-   music-deck apply --plan plan.json
-   ```
-
-   Nothing in the manifest's *frontmatter* changed, so the conformance kit is
-   unaffected — this is body prose only, and the body carries no compatibility
-   guarantee. Still worth fixing before anyone follows it.
-
-2. **`pyproject.toml` — this lane edited it** (adding four provider extras). It
-   is MD-1's file. Base dependencies were **not** touched; the change is
-   additive, under `[project.optional-dependencies]`, and is required for the
-   `provider_sdk` refusal's remedy (`uv pip install "music-deck[anthropic]"`) to
-   name something that exists. Flagged in case it collides with another lane.
-
-3. **`src/music_deck/cli.py` and `src/music_deck/__init__.py` — edited within the
-   item's grant.** In `cli.py`, only the `plan` verb entry, its handler, and two
-   imports (`json`, `pathlib.Path`). In `__init__.py`, three exports added
-   (`plan`, `check_plan_transcript`, `check_prompts`) because `cli.v1` Core 7
-   requires every CLI capability to be reachable from the library. No shared
-   helper's behaviour was changed.
-
-4. **A steward-level question, not urgent:** should `requires-python` rise to
-   `>=3.12` so the engine can be a declared extra (interpretation 4)? Today a
-   3.11 user gets every deterministic verb and a clean refusal from `plan`, which
-   seems the right trade — but it means `plan`'s substrate is installed by a
-   second command rather than by an extra.
-
-5. **For MD-5 (`apply`):** `music_deck.verbs.plan.validate_plan_document` is the
-   seam to replace; `_first_problem` is a pure function returning
-   `(path, detail)` and can be lifted wholesale into `plan_schema` if useful. The
-   refusal it raises is `invalid_plan` with `path` in the envelope, exit 2, per
-   `cli.v1` Core 6.
-
-6. **For `boundary.v1`'s conformance kit (unbuilt):** the assert it needs is
-   already a pure function — `music_deck.prompt_boundary.check_prompts(prompts,
-   allowed)`. It reads no file, touches no environment, and calls nothing, so it
-   can run against a transcript captured on a machine the kit does not have.
-   `music_deck.testing` ships `Recording`/`Scripted`/`Unconfigured` inside the
-   package precisely so a reviewer can run this pair against their own install
-   without cloning the repo.
-
-## Scope-outs honoured
-
-No publishing, tagging, releasing, PR, or merge. No work on `http.py` or the
-Spotify verbs (MD-2/MD-3) — neither exists yet and this lane did not create
-them. No changes to `docs/VISION.md` or `contracts/*.md`. No real Spotify
-account and no Spotify request anywhere, in tests or out. No infrastructure
-stood up, so nothing to register in the infra ledger and nothing to tear down.
-The one file outside the item's named paths that was edited (`pyproject.toml`)
-is flagged above.
-
-## Files this lane added or changed
-
-| Path | What |
-|---|---|
-| `src/music_deck/intelligence.py` | the `Intelligence` protocol, `AmplifierIntelligence` (engine in-process, tools/agents/hooks unmounted, approval declined), the preflight taxonomy and `NoModelSubstrate` |
-| `src/music_deck/prompts/plan.md` | the only non-caller text a prompt may carry |
-| `src/music_deck/prompts/__init__.py` | the part-splitting loader and `static_prompt_texts()` |
-| `src/music_deck/prompt_boundary.py` | `boundary.v1` Core 2 as a pure cover check over prompt strings |
-| `src/music_deck/verbs/plan.py` | the verb: preflight, assemble, one turn, validate, publish the transcript |
-| `src/music_deck/testing/intelligence_doubles.py` | `Recording`, `Scripted`, `Unconfigured` |
-| `tests/test_plan_boundary.py` | the discriminating pair, the offline proofs, the CLI adapter |
-| `tests/test_plan_refusal.py` | exit 3, the precondition taxonomy, the no-prompt-built tripwire, the import probes |
-| `src/music_deck/cli.py` | the `plan` verb entry and handler (replacing MD-1's stub) |
-| `src/music_deck/__init__.py` | three exports (`cli.v1` Core 7) |
-| `pyproject.toml` | four provider extras (see note 2) |
-
-## Work item resolved — read back from the queue
+## The item, resolved and read back
 
 AGENTS.md rule 5: evidence lives in a file or in printed output, never inside a
-tool call. So the resolution was written, then read back with the queue's own
-read command, and the stored text pasted here.
+tool call. So the item was resolved and then read back with the queue's own read
+command; the stored reason below is what the terminal printed.
 
 ```
-$ amplifier-work-tracker list --project music_deck --id music_deck-dws
-ID:       music_deck-dws
-TITLE:    MD-4 Intelligence protocol + `plan` verb + the discriminating good/bad pair (the one-way boundary)
+$ amplifier-work-tracker list --project music_deck --id music_deck-2rj
+ID:       music_deck-2rj
+TITLE:    MD-2 Spotify boundary: PKCE auth, login/disconnect/whoami, HTTP client with the frozen refusal vocabulary, removed-endpoint guard
 STATUS:   resolved
-HOLDER:   agent-spark-1-3471396
-CREATED:  2026-09-04T14:10:56+00:00 by agent-spark-1-582165
-UPDATED:  2026-09-04T15:40:21+00:00
-CLOSED:   2026-09-04T15:40:21+00:00
+HOLDER:   agent-spark-1-3471364
+CREATED:  2026-09-04T14:10:01+00:00 by agent-spark-1-582165
+UPDATED:  2026-09-04T15:42:37+00:00
+CLOSED:   2026-09-04T15:42:37+00:00
 
 RESOLUTION:
-`music-deck plan "upbeat 90s guitar songs for a Saturday morning"` now turns a brief in your own words into a plan document you can read and edit before anything touches your Spotify account — and prints, alongside it, the verbatim text of every prompt it sent to the model to get it. Add `--context notes.txt` to attach material of your own, `--output plan.json` to write a plan `apply` can read.
-
-The point of this lane is not the verb, it is that Spotify's Developer Policy §III — no Spotify content into an AI model — stopped being a promise and became something you can check yourself. `music_deck.check_plan_transcript(transcript, brief=...)` takes what `plan` printed and tells you, in plain words, whether every character of every prompt came from your own text or from music-deck's own static prompt file: "boundary.v1 Core 2 kept: every one of 1 prompt(s) is covered ... with nothing left over." It works by cover, not by keyword scanning — anything from a third source shows up as leftover text, whether or not it looks like Spotify data — and it is a pure function, so a reviewer can run it against a transcript from a machine they do not have.
-
-That check is proven by a pair that actually discriminates, both halves through the same function: a plan built from the brief alone PASSES; the same run with fetched track metadata appended to the prompt FAILS, naming boundary.v1 Core 2 and quoting the 197 characters that leaked. A leak carrying nothing Spotify-shaped ("the last playlist this user built was called Beach") fails identically; a single stray character fails; whitespace does not.
-
-`plan` makes no Spotify request at all and needs no token: strace shows zero network syscalls of any kind during a run, with a positive control that really did connect to api.spotify.com proving the tracer was live. With no model provider configured it exits 3 with `{"code": "no_provider_configured", "missing": "provider"}` naming which of four preconditions is absent (provider · credentials · provider SDK · engine) and how to fix each — and it refuses BEFORE any prompt exists, proven twice over: the Unconfigured double records and raises if its run() is ever reached (0 invocations), and a tripwire replacing the prompt assembler is never called (0 prompts assembled). It never falls back to a deterministic answer. Provider SDKs are extras (`music-deck[anthropic]`), never base dependencies: importing music_deck, music_deck.intelligence, music_deck.verbs.plan, or the CLI pulls in no provider SDK and not even the engine library — which matters because importing the engine rewrites AMPLIFIER_HOME in the caller's own environment.
-
-Evidence in DONE.md, all pasted output: the good/bad pair; the strace pair; the exit-3 envelope from the binary with the environment scrubbed; the four import probes; 141 tests green (103 of MD-1's unchanged, 38 new); the upstream Smart Tools kit still 15 PASS / 0 FAIL / 0 SKIP against a non-editable install. Beyond the bar, a real Anthropic turn through the production Intelligence was run end to end: a brief unlike the prompt's worked example produced Ethio-jazz and desert-blues steps with size.minutes 60 for "about an hour", and its real transcript passes the same boundary check.
-
-Ships for the lanes after this one: `music_deck.testing` (Recording · Scripted · Unconfigured) inside the package, so a reviewer can run this pair against their own install without cloning; `music_deck.prompt_boundary.check_prompts(prompts, allowed)` as the pure assert boundary.v1's conformance kit needs; and `validate_plan_document` as the single seam MD-5's plan.v1 validator replaces by landing, with no edit to this lane's files. DONE.md records four things for the manager: two now-stale worked-invocation lines in SMART_TOOL.md (the brief is positional and stdout carries plan+transcript); this lane's one edit outside its named paths (four provider extras in pyproject.toml, base deps untouched); the measured finding that amplifier-agent cannot be a declared extra without raising requires-python from >=3.11 to >=3.12 (a steward call); and the deliberate absence of a draft-and-repair round, because a repair prompt would carry the model's own prior output and would fail this tool's own boundary check.
+music-deck can now sign in to Spotify and talk to it. `music-deck login` authorises against your own Development Mode app using PKCE — no client secret anywhere, a redirect to `http://127.0.0.1:<port>` on a port bound at run time (never `localhost`, which Spotify rejects), and the token written to $XDG_STATE_HOME/music-deck/token.json at mode 0600. `music-deck whoami` reports the signed-in account; `music-deck disconnect` deletes the token and every locally cached byte of Spotify content and prints the list of exactly what it removed, leaving your own client ID alone. Expired access tokens renew themselves; the six-month refresh wall is detected from the stored authorisation date and refuses before spending a request, because refreshing never extends it. Every Spotify failure now arrives as one of the frozen words from cli.v1 Core 6 with a remedy you can act on, not an HTTP status: 401 becomes not_authenticated or reauthorization_required depending on whether a refresh is possible; a 403 becomes premium_required on a player write, playlist_items_unavailable on someone else's playlist, or not_allowlisted otherwise (recorded, with every Spotify id redacted, so `check` can report it); 204 on the player read becomes no_active_device; a 429 with Retry-After is waited out exactly once and then refuses carrying retry_after_s, while a 429 whose body says QUOTA_EXCEEDED is never retried at all because waiting cannot clear a quota. And music-deck cannot call an endpoint Spotify has withdrawn: a table of the November 2024 and February 2026 removals is checked before the URL is built, proved by 24 refused calls with zero requests reaching the transport, and by a static scan that finds no withdrawn path literal (and no client_secret) anywhere in src/. Evidence in DONE.md: all eight named response scenarios run through the real CLI against a mocked Spotify with the exit code and the printed envelope pasted; `login` driven end to end in a harness with `ls -l` showing -rw-------; the shipped binary refusing `whoami` in 0.06s with stdin closed and a watched $BROWSER script that never ran; disconnect's before/after file listing; 221 tests pass; the Smart Tools kit is still 15/15. DONE.md also records three things for the manager: two tests in MD-1's tests/test_cli_shape.py had to change (one of them was running `disconnect` against the real ~/.local/state/music-deck of whoever ran the suite), a four-line change recommended in MD-1's check.py so it knows the SPOTIFY_CLIENT_ID alias, and a boundary.v1 Core 8 question about last-403.json being a fourth persisted file.
 ```
 
-(The item's ACCEPTANCE and DESCRIPTION blocks follow in the same output; they
-are the brief this lane was given, and each of their criteria is answered in the
-"Acceptance criteria" sections above.)
-
-## Lane state at hand-off
-
-- Branch `lane/md-4`, three commits, working tree clean. Nothing merged, nothing
-  pushed to `main`, no PR opened, no tag.
-- No infrastructure was stood up, so there is nothing in the infra ledger to tear
-  down. Everything ran locally: mocked doubles, local files, and one optional
-  real model call from a throwaway venv outside the repo.
+(The item's ACCEPTANCE and DESCRIPTION blocks follow in the same
+output; each criterion is quoted above the evidence that settles it.)

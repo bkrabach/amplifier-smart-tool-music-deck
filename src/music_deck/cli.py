@@ -48,6 +48,9 @@ from music_deck.errors import (
 )
 from music_deck.manifest import manifest as read_manifest
 from music_deck.verbs.plan import plan as run_plan
+from music_deck.verbs.auth_verbs import disconnect as run_disconnect
+from music_deck.verbs.auth_verbs import login as run_login
+from music_deck.verbs.auth_verbs import whoami as run_whoami
 
 PROG: Final = "music-deck"
 
@@ -159,6 +162,18 @@ def _handle_plan(args: argparse.Namespace) -> dict[str, Any]:
     return result
 
 
+def _handle_login(args: argparse.Namespace) -> dict[str, Any]:
+    return run_login(timeout_s=float(getattr(args, "timeout", 180) or 180))
+
+
+def _handle_disconnect(_args: argparse.Namespace) -> dict[str, Any]:
+    return run_disconnect()
+
+
+def _handle_whoami(_args: argparse.Namespace) -> dict[str, Any]:
+    return run_whoami()
+
+
 # The order here is the order cli.v1 Core 2 lists them, with `check` and
 # `manifest` first because they are the two that work today.
 VERBS: Final[tuple[Verb, ...]] = (
@@ -185,17 +200,32 @@ VERBS: Final[tuple[Verb, ...]] = (
         "login",
         "Authorise against your own Spotify app, once, via PKCE in a browser.",
         "A JSON object naming the account, the granted scopes, and the token path.",
-        detail="The only interactive verb. Every other verb refuses `not_authenticated`.",
+        args=(
+            Arg(
+                "--timeout",
+                "integer",
+                "Seconds to wait for the browser round trip before refusing.",
+                default=180,
+            ),
+        ),
+        handler=_handle_login,
+        detail=(
+            "The only interactive verb. Every other verb refuses "
+            "`not_authenticated`. Needs MUSIC_DECK_CLIENT_ID (or a client_id in "
+            "the config file): music-deck ships no credential of its own."
+        ),
     ),
     Verb(
         "disconnect",
         "Delete the stored token and every locally cached byte of Spotify content.",
         "A JSON object listing exactly what was deleted.",
+        handler=_handle_disconnect,
     ),
     Verb(
         "whoami",
         "Report the signed-in Spotify account.",
         "A JSON object describing the account.",
+        handler=_handle_whoami,
     ),
     Verb(
         "search",
