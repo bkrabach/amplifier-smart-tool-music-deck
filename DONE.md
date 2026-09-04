@@ -458,3 +458,38 @@ work item names. No real Spotify account, no provider key, and no network call
 in any test — every test is filesystem, environment, or subprocess only. No
 infrastructure was stood up, so there is nothing in the infra ledger to tear
 down.
+
+---
+
+## Work item resolved — read back from the queue
+
+AGENTS.md rule 5: evidence lives in a file or in printed output, never inside a
+tool call. So the resolution was written, then read back with the queue's own
+read command, and the stored text pasted here.
+
+```
+$ amplifier-work-tracker list --project music_deck --id music_deck-5xp
+ID:       music_deck-5xp
+TITLE:    MD-1 Skeleton: package, thin CLI, `check` smoke, manifest — Smart Tools kit green
+STATUS:   resolved
+HOLDER:   agent-spark-1-2875360
+CREATED:  2026-09-04T14:10:02+00:00 by agent-spark-1-582165
+UPDATED:  2026-09-04T15:07:04+00:00
+CLOSED:   2026-09-04T15:07:04+00:00
+
+RESOLUTION:
+music-deck now installs and runs. Install the repo (`uv pip install <repo>`) and you get a `music-deck` binary on PATH. `music-deck check` works on a machine with no Spotify credentials, no model provider and no network at all: it reports your client ID, redirect-URI shape, token cache and its file mode, access-token expiry, how much of Spotify's six-month refresh wall is left, granted scopes, any recorded 403 (the only signal an account is not on your app's allowlist), and whether a model provider is configured — then exits 0 and tells you what to do next in plain words. Reporting a missing credential is its success, not a failure. `music-deck -h` gives a terse verb list; `music-deck --help` gives the complete listing an agent needs — all 40 verbs from cli.v1 Core 2 with their arguments, types and return shapes, with `plan` marked as the one model-backed verb. `music-deck manifest` and `music_deck.manifest()` both return the manifest as structured data from an installed environment. Every verb the CLI contract names is present; the ones whose lane has not landed refuse loudly with a `not_implemented` error envelope and a non-zero exit, so nothing pretends to work. Evidence in DONE.md: the upstream Smart Tools conformance kit reports 15 PASS, 0 FAIL, 0 SKIP against a non-editable install from a scratch directory; strace shows zero network syscalls during `check`, with a positive control; 103 tests pass. Also lands src/music_deck/errors.py — the ten frozen refusal codes of cli.v1 Core 6, the error envelope of Core 4 and the exit-code mapping of Core 5 — which MD-2..MD-5 import. DONE.md records one contract ambiguity for the steward (whether rate_limited, quota_exceeded and partial_result should exit 2 as refusals, as implemented, or 1 as failures) and the token-file/403/config handoffs the later lanes depend on.
+
+ACCEPTANCE:
+GIVEN a fresh scratch directory with all provider env vars scrubbed and no network, WHEN `uv run <path-to-amplifier-smart-tools>/conformance/run.py <repo-root>` runs, THEN it reports 0 FAIL across all 15 rules (SKIP allowed only where the kit says it cannot evaluate) — output pasted in DONE.md. GIVEN the same scratch dir, WHEN `music-deck check` runs, THEN exit 0 and stdout is exactly one JSON document (cli.v1 Core 2: "`check` additionally succeeds (exit 0) with no credentials and no network, in a fresh working directory"). WHEN `music-deck -h` and `music-deck --help` run, THEN both exit 0, --help lists every verb in cli.v1 Core 2 and marks `plan` model-backed (Core 1: "`--help` gives a complete listing for an agent — every verb, its arguments, types, return shape, and which verbs are model-backed"). WHEN `python -c "import music_deck; print(music_deck.manifest()['name'])"` runs from an installed (not editable-from-checkout) environment, THEN it prints music-deck (Core 7: "the manifest is exposed as structured data via `music_deck.manifest()`"). WHEN `music-deck check < /dev/null` runs with stdin closed, THEN it returns within 5s (Core 1: "A run with stdin closed never hangs"). Version in pyproject == version in SMART_TOOL.md frontmatter == 0.1.0. pytest green.
+
+DESCRIPTION:
+Contracts served: cli.v1 Core 1, 2 (the `check` half), 7; boundary.v1 Core 6 (the `check` half). External: Smart Tools spec microsoft/amplifier-smart-tools @ fd3c634 (15-rule conformance kit).
+
+Gap: the repo at https://github.com/bkrabach/amplifier-smart-tool-music-deck (main @ 9e296c2) has vision + contracts + participant kit and NO code. Nothing installs, nothing runs.
+
+What to build (owns these paths — no other lane touches them): pyproject.toml (name music-deck, version 0.1.0, `[project.scripts] music-deck = "music_deck.cli:main"`, python >= 3.11, NO provider SDK in base deps), smart-tool.json (`{"manifest": "src/music_deck/SMART_TOOL.md", "cli_argv": ["music-deck"], "deterministic_smoke": ["check"]}`), src/music_deck/__init__.py (exports `manifest()`), src/music_deck/SMART_TOOL.md (frontmatter per spec/manifest.md: smart_tool_format 1, name music-deck, version 0.1.0, description, use_cases (the five from docs/VISION.md's substance), platforms [linux, macos], requires: spotify-app with purpose + install: docs/spotify-app.md; body = when to reach for it / sharp edges / worked invocations), docs/spotify-app.md (how to register a Development Mode app and hold Premium — plain words), src/music_deck/manifest.py (reads the packaged SMART_TOOL.md via importlib.resources, parses frontmatter, returns a dict), src/music_deck/cli.py (argparse or click; -h terse, --help complete listing marking `plan` as model-backed; help to stdout exit 0; verb stubs for every deterministic verb in cli.v1 Core 2 that emit the error envelope `{"error":{"code":"not_implemented","message":...,"remedy":...}}` exit 1 until their lane lands — EXCEPT `check` and `manifest`, which are real), src/music_deck/check.py (reports: client ID present · redirect-URI shape · token cache present/mode · access-token expiry · refresh-token age vs 6-month wall · granted scopes · last observed 403/allowlist state · provider configured; exit 0 ALWAYS, one JSON doc), src/music_deck/errors.py (the envelope type + the frozen code list from cli.v1 Core 6 + exit-code mapping from Core 5 — the shared vocabulary every later lane imports), tests/test_cli_shape.py, tests/test_check.py, tests/test_manifest.py.
+```
+
+(The item's ACCEPTANCE and DESCRIPTION blocks follow in the same output; they
+are the brief this lane was given and are reproduced in the sections above.)
