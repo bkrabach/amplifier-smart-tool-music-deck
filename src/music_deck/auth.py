@@ -406,8 +406,10 @@ def _token_document(
     Hence ``previous``.
     """
     moment = issued_at or _now()
-    expires_in = payload.get("expires_in")
-    seconds = int(expires_in) if isinstance(expires_in, (int, float, str)) and str(expires_in).strip().isdigit() else 3600
+    try:
+        seconds = int(float(payload.get("expires_in")))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        seconds = 3600  # Spotify's documented default: an access token lasts an hour
     refresh = payload.get("refresh_token")
     if not (isinstance(refresh, str) and refresh.strip()) and previous:
         refresh = previous.get("refresh_token")
@@ -623,13 +625,15 @@ class FileTokenSource:
             return str(access)
         if self.can_refresh():
             return self.refresh()
-        if isinstance(access, str) and access.strip():
-            # No refresh token, but an access token that may still be good --
-            # let Spotify be the judge rather than refusing on arithmetic.
+        if isinstance(access, str) and access.strip() and expires_at is None:
+            # The file records no readable expiry, so "expired" is not something
+            # this can know. Let Spotify be the judge rather than refuse on
+            # arithmetic that was never possible.
             return str(access)
         raise MusicDeckError(
             ErrorCode.NOT_AUTHENTICATED,
-            "The stored token has no usable access token and no refresh token.",
+            "The stored access token has expired and there is no refresh token to "
+            "renew it with.",
         )
 
     # -- renewing ------------------------------------------------------------ #
