@@ -1107,3 +1107,28 @@ clause change, not a code change.
   the verb you need does not exist yet, and delete the probe when it does.
 - **Add your verbs to `IMPLEMENTED_VERBS`** in `tests/test_cli_shape.py` as they
   land, for the reason recorded above.
+
+---
+
+## The item, resolved and read back
+
+AGENTS.md rule 5: evidence lives in a file or in printed output, never inside a
+tool call. So the item was resolved and then read back with the queue's own read
+command; the stored reason below is what the terminal printed.
+
+```
+$ amplifier-work-tracker list --project music_deck --id music_deck-2rj
+ID:       music_deck-2rj
+TITLE:    MD-2 Spotify boundary: PKCE auth, login/disconnect/whoami, HTTP client with the frozen refusal vocabulary, removed-endpoint guard
+STATUS:   resolved
+HOLDER:   agent-spark-1-3471364
+CREATED:  2026-09-04T14:10:01+00:00 by agent-spark-1-582165
+UPDATED:  2026-09-04T15:42:37+00:00
+CLOSED:   2026-09-04T15:42:37+00:00
+
+RESOLUTION:
+music-deck can now sign in to Spotify and talk to it. `music-deck login` authorises against your own Development Mode app using PKCE — no client secret anywhere, a redirect to `http://127.0.0.1:<port>` on a port bound at run time (never `localhost`, which Spotify rejects), and the token written to $XDG_STATE_HOME/music-deck/token.json at mode 0600. `music-deck whoami` reports the signed-in account; `music-deck disconnect` deletes the token and every locally cached byte of Spotify content and prints the list of exactly what it removed, leaving your own client ID alone. Expired access tokens renew themselves; the six-month refresh wall is detected from the stored authorisation date and refuses before spending a request, because refreshing never extends it. Every Spotify failure now arrives as one of the frozen words from cli.v1 Core 6 with a remedy you can act on, not an HTTP status: 401 becomes not_authenticated or reauthorization_required depending on whether a refresh is possible; a 403 becomes premium_required on a player write, playlist_items_unavailable on someone else's playlist, or not_allowlisted otherwise (recorded, with every Spotify id redacted, so `check` can report it); 204 on the player read becomes no_active_device; a 429 with Retry-After is waited out exactly once and then refuses carrying retry_after_s, while a 429 whose body says QUOTA_EXCEEDED is never retried at all because waiting cannot clear a quota. And music-deck cannot call an endpoint Spotify has withdrawn: a table of the November 2024 and February 2026 removals is checked before the URL is built, proved by 24 refused calls with zero requests reaching the transport, and by a static scan that finds no withdrawn path literal (and no client_secret) anywhere in src/. Evidence in DONE.md: all eight named response scenarios run through the real CLI against a mocked Spotify with the exit code and the printed envelope pasted; `login` driven end to end in a harness with `ls -l` showing -rw-------; the shipped binary refusing `whoami` in 0.06s with stdin closed and a watched $BROWSER script that never ran; disconnect's before/after file listing; 221 tests pass; the Smart Tools kit is still 15/15. DONE.md also records three things for the manager: two tests in MD-1's tests/test_cli_shape.py had to change (one of them was running `disconnect` against the real ~/.local/state/music-deck of whoever ran the suite), a four-line change recommended in MD-1's check.py so it knows the SPOTIFY_CLIENT_ID alias, and a boundary.v1 Core 8 question about last-403.json being a fourth persisted file.
+```
+
+(The item's ACCEPTANCE and DESCRIPTION blocks follow in the same
+output; each criterion is quoted above the evidence that settles it.)
