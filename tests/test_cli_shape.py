@@ -82,6 +82,16 @@ DETERMINISTIC_VERBS = (
 MODEL_BACKED_VERBS = ("plan",)
 ALL_VERBS = DETERMINISTIC_VERBS + MODEL_BACKED_VERBS
 
+# Verbs whose lane has landed. A built verb no longer answers `not_implemented`,
+# so the two "unbuilt verb" tests below skip these -- and must skip them, not
+# merely tolerate them: `disconnect` deletes files, and running it here (this
+# file's `run()` passes no MUSIC_DECK_STATE_DIR) would point it at the real
+# ~/.local/state/music-deck of whoever runs the suite. Each landing lane adds its
+# verbs here; MD-2 added login, disconnect, whoami. Coverage for them lives in
+# tests/test_auth.py, tests/test_http_refusals.py and tests/test_disconnect.py,
+# which drive them against a temporary state directory.
+IMPLEMENTED_VERBS = ("check", "manifest", "login", "disconnect", "whoami")
+
 # The same regex the upstream conformance kit scrubs the environment with.
 _PROVIDER_ENV_RE = re.compile(
     r"(API_KEY|ACCESS_KEY|SECRET|_TOKEN$|^ANTHROPIC|^OPENAI|^AZURE_OPENAI|^GOOGLE_API"
@@ -264,7 +274,7 @@ def test_diagnostics_go_to_stderr_and_the_document_to_stdout(scratch):
     json.loads(result.stdout)
 
 
-@pytest.mark.parametrize("verb", [v for v in ALL_VERBS if v not in ("check", "manifest")])
+@pytest.mark.parametrize("verb", [v for v in ALL_VERBS if v not in IMPLEMENTED_VERBS])
 def test_every_unbuilt_verb_refuses_loudly_rather_than_exiting_zero(verb, scratch):
     """A stub that exits 0 would hide the gap from every caller.
 
@@ -279,11 +289,11 @@ def test_every_unbuilt_verb_refuses_loudly_rather_than_exiting_zero(verb, scratc
 
 
 def test_an_unbuilt_verb_reports_not_implemented_when_its_arguments_are_valid(scratch):
-    result = run("whoami", cwd=scratch)
+    result = run("devices", cwd=scratch)
     assert result.returncode == EXIT_FAILURE
     envelope = json.loads(result.stdout)["error"]
     assert envelope["code"] == ErrorCode.NOT_IMPLEMENTED
-    assert envelope["verb"] == "whoami"
+    assert envelope["verb"] == "devices"
 
 
 # --------------------------------------------------------------------------- #
