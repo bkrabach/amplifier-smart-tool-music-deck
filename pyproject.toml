@@ -18,6 +18,17 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8"]
 
+# Provider stacks are extras, never base dependencies. cli.v1 Core 2 promises
+# every verb except `plan` runs "with no provider configured and no provider SDK
+# installed", and a base dependency would quietly break that promise for the
+# forty verbs that never touch a model. `music_deck.intelligence.preflight`
+# names the extra a caller is missing, so the refusal (exit 3) and the fix here
+# stay in step.
+anthropic = ["anthropic"]
+openai = ["openai"]
+gemini = ["google-genai"]
+azure-openai = ["openai"]
+
 [project.scripts]
 music-deck = "music_deck.cli:main"
 
