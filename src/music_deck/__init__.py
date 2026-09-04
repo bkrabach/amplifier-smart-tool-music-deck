@@ -10,6 +10,10 @@ What is reachable today:
 
 * ``manifest()`` -- the SMART_TOOL.md manifest as a dict (``cli.v1`` Core 7)
 * ``check()`` -- the deterministic smoke report (``boundary.v1`` Core 6)
+* ``plan()`` -- the one model-backed verb (``cli.v1`` Core 3): a brief becomes a
+  plan document, published with the verbatim transcript of every prompt sent
+* ``check_plan_transcript()`` -- the one-way boundary as a function anyone can
+  run over that transcript (``boundary.v1`` Core 2, 3)
 * the error vocabulary in ``music_deck.errors`` -- the frozen refusal codes of
   ``cli.v1`` Core 6 and the exit-code mapping of Core 5, which every verb built
   after this one shares
@@ -38,6 +42,8 @@ from music_deck.errors import (
     exit_code_for,
 )
 from music_deck.manifest import ManifestError, manifest, manifest_body
+from music_deck.prompt_boundary import BoundaryReport, check_plan_transcript, check_prompts
+from music_deck.verbs.plan import plan
 
 __version__ = "0.1.0"
 
@@ -49,6 +55,12 @@ __all__ = [
     "ManifestError",
     # the deterministic smoke verb -- boundary.v1 Core 6
     "check",
+    # the one model-backed verb -- cli.v1 Core 3, boundary.v1 Core 1, 2, 3
+    "plan",
+    # the one-way boundary, checkable by anyone holding a transcript
+    "check_plan_transcript",
+    "check_prompts",
+    "BoundaryReport",
     # the shared error vocabulary -- cli.v1 Core 4, 5, 6
     "ErrorCode",
     "FROZEN_CODES",
