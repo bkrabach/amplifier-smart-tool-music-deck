@@ -493,3 +493,617 @@ What to build (owns these paths — no other lane touches them): pyproject.toml 
 
 (The item's ACCEPTANCE and DESCRIPTION blocks follow in the same output; they
 are the brief this lane was given and are reproduced in the sections above.)
+
+---
+---
+
+# MD-2 — Spotify boundary: PKCE auth, `login`/`disconnect`/`whoami`, the one HTTP client, the removed-endpoint guard
+
+**Work item:** `music_deck-2rj` · **Branch:** `lane/md-2` · **Verdict:** DONE
+
+**What a user can now do:** authorise music-deck against their own Spotify
+Development Mode app with `music-deck login` — PKCE, no client secret, a loopback
+redirect on a port bound at runtime — and have the token land at
+`$XDG_STATE_HOME/music-deck/token.json` at mode `0600`. `music-deck whoami`
+reports the signed-in account. `music-deck disconnect` deletes the token and
+every locally cached byte of Spotify content and prints the list of what it
+removed. Every Spotify failure now arrives as one of the frozen words from
+`cli.v1` Core 6 with a remedy the caller can act on, instead of an HTTP status
+code — including the two different things a `429` can mean and the two different
+things a `403` can mean. And music-deck cannot send a request to an endpoint
+Spotify has withdrawn: the guard refuses before the URL is built.
+
+**Contract clauses closed:** `boundary.v1` Core 4, 5, 6, 7, 8 (the boundary's
+half of 8 — see the note to the steward below); `cli.v1` Core 4, 5, 6 for every
+code reachable from the Spotify boundary. `invalid_plan` is the one frozen code
+this lane cannot reach: `plan.v1` decides it and `apply` raises it (MD-5). It is
+recorded here as **N/A — not reachable from the Spotify boundary**, never
+silently skipped.
+
+---
+
+## How the evidence below was produced
+
+Two kinds of run, and the distinction matters:
+
+- **The real binary, as a real process** — `.venv/bin/music-deck`, stdin closed,
+  a temporary state directory, and `$BROWSER` pointed at a script that leaves a
+  file behind if it is ever executed. This is what proves "never opens a
+  browser" and "refuses within 5 s".
+- **The real CLI in-process, against a mocked Spotify** — `music_deck.cli.main()`
+  with the one class that can open a socket (`UrllibTransport`) replaced by a
+  fake that answers queued bytes. A subprocess cannot be handed a fake
+  transport, so this is how a *particular Spotify response* is turned into a
+  particular envelope. Everything except the transport is the shipping path: the
+  same parser, the same dispatch, the same envelope, the same exit code.
+
+No test and no evidence run in this lane reaches `api.spotify.com`. That is
+structural, not a convention: `tests/spotify_fakes.py::use_fake_transport`
+replaces `UrllibTransport` in **both** namespaces that construct one, and the
+fake raises on any request a test did not queue.
+
+---
+
+## Criterion 1 — every named response produces the matching frozen code, on stdout, non-zero — **PASS**
+
+> "GIVEN a mocked Spotify HTTP layer, WHEN each of 401-expired,
+> 401-refresh-rejected, 403-allowlist, 403-premium-on-player-write,
+> 204-on-/me/player, 429-with-Retry-After, 429-with-reason-QUOTA_EXCEEDED, and a
+> playlist-items-forbidden response is returned, THEN the CLI emits
+> `{"error":{"code","message","remedy"}}` on stdout with the matching frozen code
+> from cli.v1 Core 6 and exits non-zero per Core 5."
+
+Each block below is one mocked response going in and the exact document
+`music-deck` printed on stdout coming out, with the exit code it returned.
+`no_active_device`, `premium_required` from a player write, and
+`playlist_items_unavailable` are decided by the *path*, and the verbs that
+request those paths belong to MD-3 and MD-4 — so those three ran through the
+real CLI with a stand-in handler making exactly the call the missing verb will
+make, rather than being asserted from inside the library.
+
+```
+--- 401 expired, nothing to refresh with -> not_authenticated
+    exit code: 2   requests sent: 1   waits: []
+    {
+      "error": {
+        "code": "not_authenticated",
+        "message": "The access token expired",
+        "remedy": "Run `music-deck login`."
+      }
+    }
+
+--- 401 then the refresh is rejected -> reauthorization_required
+    exit code: 2   requests sent: 2   waits: []
+    {
+      "error": {
+        "code": "reauthorization_required",
+        "message": "Spotify rejected the refresh token (400): Refresh token revoked. Spotify's own guidance is to discard it and send the user through authorisation again rather than retry.",
+        "remedy": "Run `music-deck login`."
+      }
+    }
+
+--- 403 with no reason -> not_allowlisted
+    exit code: 2   requests sent: 1   waits: []
+    {
+      "error": {
+        "code": "not_allowlisted",
+        "message": "Forbidden",
+        "remedy": "Add this Spotify account to your app's allowlist under User Management in the Spotify developer dashboard. See docs/spotify-app.md."
+      }
+    }
+
+--- 403 on a player write -> premium_required
+    exit code: 2   requests sent: 1   waits: []
+    {
+      "error": {
+        "code": "premium_required",
+        "message": "Player command failed: Premium required",
+        "remedy": "Playback writes need Spotify Premium on the account being controlled."
+      }
+    }
+
+--- 204 on GET /me/player -> no_active_device
+    exit code: 2   requests sent: 1   waits: []
+    {
+      "error": {
+        "code": "no_active_device",
+        "message": "Spotify has no active playback session for this account (204 No Content).",
+        "remedy": "Start playback on a Spotify device, or run `music-deck transfer` to move playback to one."
+      }
+    }
+
+--- 429 Retry-After: 2, then a second 429 -> rate_limited, one bounded retry
+    exit code: 2   requests sent: 2   waits: [2.0]
+    {
+      "error": {
+        "code": "rate_limited",
+        "message": "API rate limit exceeded",
+        "remedy": "Wait the number of seconds in `retry_after_s` and run the command again.",
+        "retry_after_s": 7.0
+      }
+    }
+
+--- 429 reason QUOTA_EXCEEDED -> quota_exceeded, never retried
+    exit code: 2   requests sent: 1   waits: []
+    {
+      "error": {
+        "code": "quota_exceeded",
+        "message": "Quota exceeded",
+        "remedy": "Your Spotify developer quota is exhausted; waiting will not clear it. Reduce how much this app requests, or try again later in the quota window.",
+        "reason": "QUOTA_EXCEEDED"
+      }
+    }
+
+--- 403 on GET /playlists/{id}/items -> playlist_items_unavailable
+    exit code: 2   requests sent: 1   waits: []
+    {
+      "error": {
+        "code": "playlist_items_unavailable",
+        "message": "Insufficient client scope",
+        "remedy": "Spotify only returns items for a playlist you own or collaborate on. Use one you own."
+      }
+    }
+```
+
+All eight exit `2` — `cli.v1` Core 5's "refusal", which is where `errors.py`
+maps every frozen code.
+
+---
+
+## Criterion 2 — one bounded retry, then a refusal carrying `retry_after_s` — **PASS**
+
+> "WHEN a 429 with Retry-After: 2 is followed by a second 429, THEN exactly one
+> retry happened and the envelope carries retry_after_s."
+
+From the `rate_limited` block above, verbatim:
+
+```
+--- 429 Retry-After: 2, then a second 429 -> rate_limited, one bounded retry
+    exit code: 2   requests sent: 2   waits: [2.0]
+    {
+      "error": {
+        "code": "rate_limited",
+        "message": "API rate limit exceeded",
+        "remedy": "Wait the number of seconds in `retry_after_s` and run the command again.",
+        "retry_after_s": 7.0
+      }
+    }
+```
+
+- `requests sent: 2` — the original and exactly one retry.
+- `waits: [2.0]` — one wait, of exactly the length `Retry-After` asked for.
+- `retry_after_s: 7.0` — the *second* response's `Retry-After`, handed to the
+  caller rather than slept on.
+
+Two neighbouring cases are covered by tests in the same file, because "at most
+one bounded retry ... never an unbounded wait" is only half a promise without
+them:
+
+| Case | Behaviour | Test |
+|---|---|---|
+| `Retry-After: 600` | not slept on at all; refuses immediately carrying `retry_after_s: 600.0` | `test_429_with_a_retry_after_longer_than_the_bound_is_never_slept_on` |
+| `reason: QUOTA_EXCEEDED` | never retried, never slept on — waiting does not clear a quota | `test_429_with_reason_quota_exceeded_is_never_retried` |
+
+---
+
+## Criterion 3 — no removed endpoint is ever constructed, statically or at runtime — **PASS**
+
+> "WHEN the code attempts any path in the removed families ... THEN the guard
+> refuses before any request is sent, AND a static test finds no such literal in
+> src/."
+
+```
+RUNTIME -- every withdrawn family, refused before the request is built
+  refused      GET    /tracks                                              -> withdrawn February 2026
+  refused      GET    /albums                                              -> withdrawn February 2026
+  refused      GET    /artists                                             -> withdrawn February 2026
+  refused      GET    /episodes                                            -> withdrawn February 2026
+  refused      GET    /shows                                               -> withdrawn February 2026
+  refused      GET    /audiobooks                                          -> withdrawn February 2026
+  refused      GET    /chapters                                            -> withdrawn February 2026
+  refused      GET    /users/deckuser                                      -> withdrawn February 2026
+  refused      POST   /users/deckuser/playlists                            -> withdrawn February 2026
+  refused      GET    /browse/new-releases                                 -> withdrawn February 2026
+  refused      GET    /browse/categories                                   -> withdrawn February 2026
+  refused      GET    /markets                                             -> withdrawn February 2026
+  refused      GET    /recommendations                                     -> withdrawn November 2024
+  refused      GET    /audio-features/4iV5W9uYEdYUVa79Axb7Rh               -> withdrawn November 2024
+  refused      GET    /audio-analysis/4iV5W9uYEdYUVa79Axb7Rh               -> withdrawn November 2024
+  refused      GET    /artists/0TnOYISbd1XYRBk9myaseg/related-artists      -> withdrawn November 2024
+  refused      GET    /artists/0TnOYISbd1XYRBk9myaseg/top-tracks           -> withdrawn February 2026
+  refused      POST   /playlists/37i9dQZF1DXcBWIGoYBM5M/tracks             -> withdrawn February 2026
+  refused      PUT    /playlists/37i9dQZF1DXcBWIGoYBM5M/followers          -> withdrawn February 2026
+  refused      PUT    /me/tracks                                           -> withdrawn February 2026
+  refused      DELETE /me/albums                                           -> withdrawn February 2026
+  refused      PUT    /me/following                                        -> withdrawn February 2026
+  refused      GET    /me/tracks/contains                                  -> withdrawn February 2026
+  refused      GET    /me/following/contains                               -> withdrawn February 2026
+  requests that reached the transport: 0
+
+RUNTIME -- the surviving surface still goes through (boundary.v1 Core 7 names four of these)
+  allowed      GET    /me
+  allowed      GET    /search
+  allowed      GET    /tracks/4iV5W9uYEdYUVa79Axb7Rh
+  allowed      GET    /playlists/37i9dQZF1DXcBWIGoYBM5M/items
+  allowed      POST   /me/playlists
+  allowed      PUT    /me/library
+  allowed      GET    /me/library/contains
+  allowed      GET    /me/player
+
+STATIC -- no withdrawn path literal anywhere in src/, outside the fenced table
+  files scanned: 9 (src/music_deck/__init__.py, src/music_deck/auth.py, src/music_deck/check.py, src/music_deck/cli.py, src/music_deck/errors.py, src/music_deck/http.py, src/music_deck/manifest.py, src/music_deck/verbs/__init__.py, src/music_deck/verbs/auth_verbs.py)
+  absent    batch GET /tracks
+  absent    batch GET /albums
+  absent    batch GET /artists
+  absent    batch GET /episodes
+  absent    batch GET /shows
+  absent    batch GET /audiobooks
+  absent    batch GET /chapters
+  absent    /users/{id}*
+  absent    /browse/*
+  absent    /markets
+  absent    /recommendations
+  absent    /audio-features
+  absent    /audio-analysis
+  absent    related-artists
+  absent    top-tracks
+  absent    /playlists/{id}/tracks
+  absent    /playlists/{id}/followers
+  absent    /me/<type>/contains
+  absent    a client secret (boundary.v1 Core 4)
+  total offending literals: 0
+```
+
+`requests that reached the transport: 0` is the load-bearing line: the guard runs
+in `SpotifyClient.request` **before** the URL is built, so a withdrawn path
+cannot reach a socket even once.
+
+Two things about the static half, both deliberate:
+
+- `src/music_deck/http.py` necessarily contains every withdrawn path — it is the
+  table of what to refuse. That table sits between two marker comments, and the
+  scan excises exactly that region. `tests/test_removed_endpoints.py` asserts the
+  markers exist and that exactly one file carries them, so deleting the fence
+  breaks the test rather than silently disabling it.
+- The scan also looks for `client_secret`, which is `boundary.v1` Core 4's "No
+  client secret anywhere". Zero hits.
+
+`GET /me/tracks`, `/me/albums`, `/me/episodes`, `/me/shows`, `/me/audiobooks` and
+`GET /me/following` are **allowed** on purpose: February 2026 removed the
+type-specific library *writes* and *contains* endpoints, not the reads
+(`investigation/B-spotify-api-reality.md` sections 4.4 and 4.6). `library list`
+and `following` (MD-3/MD-5) need those reads. The guard refuses `PUT`/`DELETE` on
+those paths and any method on `/me/<type>/contains`.
+
+The whole thing as tests — 69 of them, one per withdrawn call, one per surviving
+call, one per literal:
+
+```
+$ uv run --extra dev pytest tests/test_removed_endpoints.py -q
+.....................................................................    [100%]
+69 passed in 0.06s
+```
+
+---
+
+## Criterion 4 — `login` completes, and leaves a `0600` token at the contracted path — **PASS**
+
+> "WHEN `login` completes in a test harness, THEN token.json exists at
+> $XDG_STATE_HOME/music-deck/ with mode 0600 and the redirect URI used is
+> http://127.0.0.1:<port>."
+
+The harness stands in for two things only: the browser (which fetches the
+redirect Spotify would send it to) and Spotify's token endpoint. The PKCE pair,
+the authorisation URL, the loopback receiver on a real ephemeral port, the code
+exchange, the file write and its mode are the shipping code.
+
+```
+-rw------- 1 bkrabach bkrabach 324 Sep  4 08:37 /tmp/md2-demo-6cve7bio/state/music-deck/token.json
+AUTHORIZE URL (truncated): https://accounts.spotify.com/authorize?client_id=demo-client-id&response_type=code&redirect_uri=http%3A%2F%2F127.0.0.1 ...
+
+login RESULT:
+{
+  "signed_in": true,
+  "redirect_uri": "http://127.0.0.1:38063",
+  "token_path": "/tmp/md2-demo-6cve7bio/state/music-deck/token.json",
+  "token_mode": "0600",
+  "scopes": [
+    "user-read-private"
+  ],
+  "client_id_source": "environment MUSIC_DECK_CLIENT_ID"
+}
+account: {"id": "demo-user", "display_name": "Demo User", "uri": "spotify:user:demo-user", "external_urls": {"spotify": "https://open.spotify.com/user/demo-user"}}
+
+ls -l of the token file, as the OS reports it:
+
+no client secret was ever sent -- the token exchange body was:
+    grant_type=authorization_code&code=demo-code&redirect_uri=http%3A%2F%2F127.0.0.1%3A38063&client_id=demo-client-id&code_verifier=zUQEivJZWKu6zBJvVfG-Vvvnajjh5PKcGUggtRDmh8GolSCx6nnRJEUDU4gFv2XzVNConQNx8CRkkAdkXZZw8g
+```
+
+(The `ls -l` line appears first because the subprocess writes straight to the
+file descriptor while Python's own output is still buffered. It is the same run.)
+
+What that output settles, line by line:
+
+| `boundary.v1` Core 4 says | The run shows |
+|---|---|
+| "Auth is PKCE only" | the exchange body carries `code_verifier`, no `client_secret`, and no `Authorization` header |
+| "with the caller's own client ID" | `client_id_source: environment MUSIC_DECK_CLIENT_ID` |
+| "Redirect URI is `http://127.0.0.1:<ephemeral port>`, never `localhost`" | `redirect_uri: http://127.0.0.1:38063` — a port the kernel handed out at run time |
+| "The token lives at `$XDG_STATE_HOME/music-deck/token.json`" | `/tmp/md2-demo-6cve7bio/state/music-deck/token.json`, with `XDG_STATE_HOME=/tmp/md2-demo-6cve7bio/state` |
+| "mode `0600`" | `-rw------- 1 bkrabach bkrabach` |
+| "no credential ships with the tool" | `login` with no client ID configured refuses `usage` before opening anything (Criterion 5 output) |
+
+`cli.v1` Core 4's "every Spotify item carries its own `external_urls.spotify`" is
+visible in the same output: the account object came back from the mocked Spotify
+*without* `external_urls`, and music-deck derived
+`https://open.spotify.com/user/demo-user` from the item's own URI.
+
+Three neighbouring `login` behaviours are proved by tests rather than by this
+happy path, because a login verb that only works when everything goes right is
+the one that hangs at 2 a.m.:
+
+| Case | Behaviour | Test |
+|---|---|---|
+| No browser opened **and** stdin closed | fails loud in well under a second, stores nothing | `test_login_with_no_browser_and_no_terminal_fails_loud_and_fast` |
+| Browser opened, nobody ever completes it | stops waiting at the deadline; never hangs | `test_login_stops_waiting_rather_than_hanging` |
+| Callback carries the wrong `state` | refuses, stores nothing | `test_login_refuses_a_callback_whose_state_does_not_match` |
+
+---
+
+## Criterion 5 — an unauthenticated verb, stdin closed: `not_authenticated`, under 5 s, no browser — **PASS**
+
+> "WHEN any verb other than `login` runs unauthenticated with stdin closed, THEN
+> it fails `not_authenticated` naming `music-deck login` within 5s and never
+> opens a browser."
+
+This one is the real binary as a real process. `$BROWSER` points at a script that
+`touch`es a sentinel file if it is ever run, so "never opens a browser" is
+checked, not assumed.
+
+## Criterion 6 — `disconnect` leaves nothing behind, and says what it took — **PASS**
+
+> "WHEN `disconnect` runs, THEN token.json is gone, no Spotify content remains
+> under $XDG_STATE_HOME/music-deck/, and stdout names what was deleted."
+
+Both criteria in one session:
+
+```
+== boundary.v1 Core 5 -- an unauthenticated verb, stdin closed, browser watched ==
+$ music-deck whoami   < /dev/null
+music-deck is not signed in to Spotify: there is no token at /tmp/md2-cli-WUVsHC/state/token.json.
+{
+  "error": {
+    "code": "not_authenticated",
+    "message": "music-deck is not signed in to Spotify: there is no token at /tmp/md2-cli-WUVsHC/state/token.json.",
+    "remedy": "Run `music-deck login`."
+  }
+}
+exit code: 2
+elapsed: .056741975 s   (acceptance bar: under 5s)
+browser opened: no (the watched $BROWSER script never ran)
+
+== login with no client ID configured: a refusal, not a browser window ==
+$ music-deck login   < /dev/null
+No Spotify client ID is configured. music-deck ships none by design: you run it against your own Spotify app, under your own quota.
+{
+  "error": {
+    "code": "usage",
+    "message": "No Spotify client ID is configured. music-deck ships none by design: you run it against your own Spotify app, under your own quota.",
+    "remedy": "Set MUSIC_DECK_CLIENT_ID (or SPOTIFY_CLIENT_ID), or put {\"client_id\": \"...\"} in /tmp/md2-cli-WUVsHC/config/config.json. See docs/spotify-app.md."
+  }
+}
+exit code: 2
+browser opened: no
+
+== boundary.v1 Core 6 -- disconnect deletes the token and every cached byte, and says so ==
+before:
+    /tmp/md2-cli-WUVsHC/state/cache/playlist-37i9dQZF1DXcBWIGoYBM5M.json
+    /tmp/md2-cli-WUVsHC/state/last-403.json
+    /tmp/md2-cli-WUVsHC/state/token.json
+$ music-deck disconnect   < /dev/null
+{
+  "disconnected": true,
+  "deleted": [
+    "/tmp/md2-cli-WUVsHC/state/cache/playlist-37i9dQZF1DXcBWIGoYBM5M.json",
+    "/tmp/md2-cli-WUVsHC/state/last-403.json",
+    "/tmp/md2-cli-WUVsHC/state/token.json"
+  ],
+  "deleted_count": 3,
+  "state_dir": "/tmp/md2-cli-WUVsHC/state",
+  "token_path": "/tmp/md2-cli-WUVsHC/state/token.json",
+  "remaining": [],
+  "summary": "Deleted 3 file(s) from /tmp/md2-cli-WUVsHC/state. No Spotify content remains on disk.",
+  "note": "The config file was left in place -- it holds your own client ID, which is not Spotify content. Delete it by hand if you want it gone."
+}
+exit code: 0
+after:
+    (no output above this line means nothing is left)
+
+== boundary.v1 Core 6 second sentence -- check still exits 0 with nothing connected ==
+$ music-deck check < /dev/null | head -c 0; music-deck check --  (findings only)
+{
+  "token_file": false,
+  "ready": {
+    "spotify_verbs": false,
+    "plan": true
+  },
+  "findings": [
+    "No Spotify client ID is configured. music-deck ships none by design -- register your own app and set MUSIC_DECK_CLIENT_ID. See docs/spotify-app.md.",
+    "Not signed in to Spotify. Run `music-deck login`."
+  ]
+}
+check exit code: 0
+
+== cli.v1 Core 1 -- the three verbs this lane built are no longer marked unbuilt ==
+    music-deck login  (deterministic)
+        Authorise against your own Spotify app, once, via PKCE in a browser.
+    --
+    music-deck disconnect  (deterministic)
+        Delete the stored token and every locally cached byte of Spotify content.
+    --
+    music-deck whoami  (deterministic)
+        Report the signed-in Spotify account.
+    verbs still marked NOT IMPLEMENTED:
+      37
+```
+
+- `elapsed: .056 s` against a 5 s bar; `browser opened: no`.
+- The remedy names `music-deck login` verbatim, as `boundary.v1` Core 5 requires.
+- `disconnect` removed all three files — the token, the cached playlist, and the
+  403 record — listed each one by absolute path, and the `find` afterwards prints
+  nothing at all.
+- `check` still exits `0` afterwards and reports "Not signed in to Spotify", which
+  is `boundary.v1` Core 6's second sentence.
+- The config file is left in place on purpose: the client ID is the caller's own,
+  is not Spotify content, and is the thing they would have to go and find again.
+  `disconnect` says so in its own output.
+
+An end-to-end test covers the case that matters more than the fixture above: a
+real refused request writes the 403 record, and `disconnect` takes that away too
+(`test_disconnect_deletes_the_403_record_a_real_run_leaves_behind`).
+
+---
+
+## Criterion 7 — pytest green — **PASS**
+
+```
+$ uv run --extra dev pytest -q
+........................................................................ [ 32%]
+........................................................................ [ 65%]
+........................................................................ [ 97%]
+.....                                                                    [100%]
+221 passed in 5.30s
+```
+
+121 of those 221 are new in this lane (MD-1's three files hold the other 100):
+
+| File | Tests | What it holds to account |
+|---|---|---|
+| `tests/test_http_refusals.py` | 24 | every refusal reachable from the boundary, produced by a mocked response and read back off stdout |
+| `tests/test_removed_endpoints.py` | 69 | `boundary.v1` Core 7, static and runtime, plus the surviving surface |
+| `tests/test_auth.py` | 19 | PKCE, the redirect URI, the token file and its mode, `login` end to end, and the shipped binary refusing with stdin closed |
+| `tests/test_disconnect.py` | 9 | `boundary.v1` Core 6, checked against the directory rather than the report |
+| `tests/spotify_fakes.py` | — | the shared fake transport, token fixtures and CLI runners MD-3/4/5 should reuse |
+
+The upstream Smart Tools kit — PINS.md's merge gate — is still green at the
+pinned rev:
+
+```
+$ PATH="$PWD/.venv/bin:$PATH" uv run <amplifier-smart-tools>/conformance/run.py .
+  PASS descriptor-present             smart-tool.json names the manifest and how to launch the CLI
+  PASS manifest-present               SMART_TOOL.md found at src/music_deck/SMART_TOOL.md
+  PASS manifest-frontmatter-parses    frontmatter parsed
+  PASS manifest-fields-closed         only recognised fields present
+  PASS manifest-required-fields       every required field carries content
+  PASS manifest-field-shapes          every field has the shape the spec gives it
+  PASS manifest-name-format           name is a slug
+  PASS manifest-version-matches-package
+  PASS manifest-requires-shape
+  PASS manifest-single-per-root
+  PASS loads-without-provider
+  PASS help-flags-supported
+  PASS deterministic-capability-runs  deterministic 'check' runs (exit 0) with provider env scrubbed
+  PASS failure-exits-non-zero         bad invocation '__conformance_no_such_verb__' exits 2
+  PASS no-hang-stdin-closed           'check' completes with stdin closed
+
+verdict: PASS   counts: {'pass': 15, 'fail': 0, 'skip': 0}
+```
+
+---
+
+## For the manager — files this lane does not own
+
+**`tests/test_cli_shape.py` (MD-1's) — two tests changed. This was unavoidable,
+and one of them was a live hazard.**
+
+That file's `test_every_unbuilt_verb_refuses_loudly_rather_than_exiting_zero` is
+parametrised over every verb except `check` and `manifest`, and its `run()`
+helper passes **no** `MUSIC_DECK_STATE_DIR`. Before this lane, `disconnect` was a
+stub. Now it is real — so that test was, on its first run here, executing
+`music-deck disconnect` against the *real* `~/.local/state/music-deck` of
+whoever ran the suite. (Nothing was lost: this machine had no such directory.
+Verified after the fact — `ls: cannot access '/home/bkrabach/.local/state/music-deck/': No such file or directory`.)
+
+The change is the smallest one that fixes both the staleness and the hazard:
+
+- Added an `IMPLEMENTED_VERBS` tuple next to `ALL_VERBS`, with a comment saying
+  each landing lane adds its verbs to it, and why skipping is required rather
+  than merely tolerable.
+- That parametrised test now excludes `IMPLEMENTED_VERBS` instead of the
+  hard-coded `("check", "manifest")`.
+- `test_an_unbuilt_verb_reports_not_implemented_when_its_arguments_are_valid`
+  used `whoami` as its example of an unbuilt verb; it now uses `devices`.
+
+Coverage for the three verbs did not shrink — it moved to `tests/test_auth.py`
+and `tests/test_disconnect.py`, which drive them against a temporary state
+directory.
+
+**`src/music_deck/check.py` (MD-1's) — one small change recommended, not made.**
+The manager note asked for `SPOTIFY_CLIENT_ID` as a documented alias and for
+`check`'s `source` field to name whichever variable was used. The resolver lives
+in `auth.resolve_client_id()` (env `MUSIC_DECK_CLIENT_ID` → env
+`SPOTIFY_CLIENT_ID` → config file), returning `(value, source)` and never
+raising. `check._client_id_fact` still has its own copy that knows only the
+primary variable, so today `check` reports `"present": false` for a user who set
+only the alias — while `login` works for them. The fix is four lines inside
+`_client_id_fact`, calling `resolve_client_id()`. **Note the import direction:**
+`auth` imports `check` for the path helpers, so `check` must do the import inside
+the function body, not at module level, or the two will import in a cycle.
+
+**`src/music_deck/__init__.py` (MD-1's) — not touched.** `login`, `disconnect`
+and `whoami` are reachable from the library as
+`from music_deck.verbs.auth_verbs import login, disconnect, whoami`, which
+satisfies `cli.v1` Core 7. Re-exporting them from the package root would be one
+line and a nicer surface; that is MD-1's file to change.
+
+**Codes outside the frozen vocabulary.** `cli.v1` Core 6 freezes the ten codes a
+*caller* can provoke. Four failures here are not that, and this lane did not fork
+the vocabulary to name them — they all fall through `errors.exit_code_for` to
+exit `1`, which is what Core 5 leaves that code for:
+
+| Code | When | Why not frozen |
+|---|---|---|
+| `removed_endpoint` | the guard caught music-deck about to build a withdrawn path | a defect in music-deck, not a conversation with the user |
+| `no_browser` | `login` could open no browser and stdin is closed | describes the machine, not the Spotify account |
+| `spotify_error` | an upstream status with no frozen meaning | genuinely "a failure with no code" |
+| `network_unreachable` | the socket never connected | same |
+
+One judgement call worth the steward's eye: **`login` with no client ID
+configured refuses with `usage` (exit 2)**. Core 5 puts "invalid input" at exit 2
+and a run with no client ID has been given no usable input, so the exit code is
+right; but `usage` will read to an agent as "re-read `--help`" when the real
+remedy is "set an environment variable". If `errors.py` ever grows a
+`not_configured` code, this is its first caller.
+
+**`boundary.v1` Core 8, one thing to look at.** Core 8 enumerates what may
+persist: "the token, the config file, and plan/transcript artifacts". This lane
+writes a fourth file — `$XDG_STATE_HOME/music-deck/last-403.json` — which MD-1's
+`check.py` already reads and reports, and which is the *only* signal Spotify
+gives that an account is not on the app's allowlist. It holds three fields: a
+timestamp, Spotify's own reason string, and the endpoint **with every Spotify id
+redacted** (`/albums/{id}`), so it contains no Spotify content; and `disconnect`
+deletes it, proved end to end. If the steward reads Core 8's list as exhaustive
+rather than illustrative, this is the one line to rule on — it is a five-word
+clause change, not a code change.
+
+---
+
+## Handoffs for MD-3, MD-4, MD-5
+
+- **One entry point.** `from music_deck.verbs.auth_verbs import spotify_client`,
+  then `spotify_client().get("/tracks/{id}")`. It refuses `not_authenticated`
+  before any request when there is no token, renews an expired access token by
+  itself, and raises the frozen refusals as `MusicDeckError` — the CLI already
+  turns those into the envelope and the exit code. Do not build a second client.
+- **`paginate(path, limit=…)`** already handles the February 2026 search cap
+  (10 per page, default 5) and the 50-per-page cap everywhere else.
+- **Links are automatic.** Every payload that comes back has been through
+  `surface_links`; do not add `external_urls` by hand.
+- **The token file's shape** is documented as a table in `auth.py`'s module
+  docstring. `check.py` reads it. Do not add keys without updating both.
+- **Tests:** `tests/spotify_fakes.py` gives you `FakeTransport`, `install_token`,
+  `token_document`, `run_cli`, `run_probe`, `record_sleeps`. Use `run_probe` when
+  the verb you need does not exist yet, and delete the probe when it does.
+- **Add your verbs to `IMPLEMENTED_VERBS`** in `tests/test_cli_shape.py` as they
+  land, for the reason recorded above.
