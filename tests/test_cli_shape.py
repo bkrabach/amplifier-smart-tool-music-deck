@@ -87,10 +87,52 @@ ALL_VERBS = DETERMINISTIC_VERBS + MODEL_BACKED_VERBS
 # merely tolerate them: `disconnect` deletes files, and running it here (this
 # file's `run()` passes no MUSIC_DECK_STATE_DIR) would point it at the real
 # ~/.local/state/music-deck of whoever runs the suite. Each landing lane adds its
-# verbs here; MD-2 added login, disconnect, whoami. Coverage for them lives in
-# tests/test_auth.py, tests/test_http_refusals.py and tests/test_disconnect.py,
-# which drive them against a temporary state directory.
-IMPLEMENTED_VERBS = ("check", "manifest", "login", "disconnect", "whoami")
+# verbs here; MD-2 added login, disconnect, whoami; MD-3 added the deterministic
+# Spotify verbs below; MD-4 added plan. Coverage for them lives in
+# tests/test_auth.py, tests/test_http_refusals.py, tests/test_disconnect.py and
+# tests/test_verbs_*.py, which drive them against a temporary state directory and
+# a fake transport.
+IMPLEMENTED_VERBS = (
+    "check",
+    "manifest",
+    "login",
+    "disconnect",
+    "whoami",
+    "plan",
+    "search",
+    "track",
+    "album",
+    "artist",
+    "show",
+    "episode",
+    "playlists",
+    "playlist items",
+    "playlist create",
+    "playlist add",
+    "playlist remove",
+    "playlist reorder",
+    "playlist rename",
+    "library list",
+    "library save",
+    "library remove",
+    "library contains",
+    "following",
+    "top",
+    "recently-played",
+    "now-playing",
+    "devices",
+    "queue",
+    "play",
+    "pause",
+    "next",
+    "previous",
+    "seek",
+    "volume",
+    "shuffle",
+    "repeat",
+    "transfer",
+    "queue-add",
+)
 
 # The same regex the upstream conformance kit scrubs the environment with.
 _PROVIDER_ENV_RE = re.compile(
@@ -289,11 +331,16 @@ def test_every_unbuilt_verb_refuses_loudly_rather_than_exiting_zero(verb, scratc
 
 
 def test_an_unbuilt_verb_reports_not_implemented_when_its_arguments_are_valid(scratch):
-    result = run("devices", cwd=scratch)
+    """`apply` is the last unbuilt verb; its lane (MD-5) has not landed.
+
+    The refusal is decided from the verb table before the argument is looked at,
+    so the path passed to --plan is never read and need not exist.
+    """
+    result = run("apply", "--plan", str(scratch / "no-such-plan.json"), cwd=scratch)
     assert result.returncode == EXIT_FAILURE
     envelope = json.loads(result.stdout)["error"]
     assert envelope["code"] == ErrorCode.NOT_IMPLEMENTED
-    assert envelope["verb"] == "devices"
+    assert envelope["verb"] == "apply"
 
 
 # --------------------------------------------------------------------------- #
