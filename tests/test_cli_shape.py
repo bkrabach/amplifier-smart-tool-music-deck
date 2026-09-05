@@ -36,9 +36,10 @@ from music_deck.errors import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# cli.v1 Core 2's <details> block, verbatim, plus the two verbs named elsewhere
-# in the contract: `plan` (Core 3, model-backed) and `manifest` (Core 7).
+# cli.v1 Core 2's deterministic verbs, plus the three named elsewhere in the
+# contract: `setup` (Core 8), `plan` (Core 3, model-backed), `manifest` (Core 7).
 DETERMINISTIC_VERBS = (
+    "setup",
     "check",
     "login",
     "disconnect",
@@ -88,12 +89,13 @@ ALL_VERBS = DETERMINISTIC_VERBS + MODEL_BACKED_VERBS
 # file's `run()` passes no MUSIC_DECK_STATE_DIR) would point it at the real
 # ~/.local/state/music-deck of whoever runs the suite. Each landing lane adds its
 # verbs here; MD-2 added login, disconnect, whoami; MD-3 added the deterministic
-# Spotify verbs below; MD-4 added plan; MD-5 added apply, which was the last one
-# left. Coverage for them lives in tests/test_auth.py,
+# Spotify verbs below; MD-4 added plan; MD-5 added apply; MD-7 added `setup`
+# (cli.v1 Core 8). Coverage for them lives in tests/test_setup.py, tests/test_auth.py,
 # tests/test_http_refusals.py, tests/test_disconnect.py, tests/test_apply.py and
 # tests/test_verbs_*.py, which drive them against a temporary state directory and
 # a fake transport.
 IMPLEMENTED_VERBS = (
+    "setup",
     "check",
     "manifest",
     "login",
