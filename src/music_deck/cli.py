@@ -51,6 +51,7 @@ from music_deck.verbs import catalog, library, player, playlists
 from music_deck.verbs.apply import apply_plan as run_apply
 from music_deck.verbs.apply import read_plan
 from music_deck.verbs.plan import plan as run_plan
+from music_deck.verbs.setup import setup as run_setup
 from music_deck.verbs.auth_verbs import disconnect as run_disconnect
 from music_deck.verbs.auth_verbs import login as run_login
 from music_deck.verbs.auth_verbs import whoami as run_whoami
@@ -116,6 +117,12 @@ _DEVICE = Arg(
 
 def _handle_check(_args: argparse.Namespace) -> dict[str, Any]:
     return run_check()
+
+
+def _handle_setup(args: argparse.Namespace) -> dict[str, Any]:
+    return run_setup(
+        client_id=getattr(args, "client_id", None), show=bool(getattr(args, "show", False))
+    )
 
 
 def _handle_manifest(_args: argparse.Namespace) -> dict[str, Any]:
@@ -354,9 +361,40 @@ def _handle_queue_add(args: argparse.Namespace) -> dict[str, Any]:
     return player.queue_add(args.uri, device=args.device)
 
 
-# The order here is the order cli.v1 Core 2 lists them, with `check` and
-# `manifest` first because they are the two that work today.
+# `setup` first, then `check`: that is the order a new caller meets them --
+# cli.v1 Core 8 makes `setup` the way from nothing to ready, and Core 2 makes
+# `check` the smoke test that confirms it worked.
 VERBS: Final[tuple[Verb, ...]] = (
+    Verb(
+        "setup",
+        "Get from a fresh install to ready: what is configured, what is missing, "
+        "and how to register a Spotify app.",
+        (
+            "A JSON object: `configured`, `missing`, `next_command`, `paths`, and "
+            "`spotify_app` (the registration steps)."
+        ),
+        args=(
+            Arg(
+                "--client-id",
+                "string",
+                "Write this Spotify client ID to the config file.",
+            ),
+            Arg(
+                "--show",
+                "flag",
+                "Report only where the config, state, and token files live.",
+            ),
+        ),
+        handler=_handle_setup,
+        detail=(
+            "Non-interactive, like every verb except `login`: it never prompts "
+            "and never reads stdin. Run it with no arguments to see what is "
+            "missing and how to register an app; run it with --client-id to "
+            "write the id (config dir 0700, config file 0600). Exit 0 always -- "
+            "reporting what is missing is its success. An unusable --client-id "
+            "is invalid input and refuses with exit 2, naming the shape."
+        ),
+    ),
     Verb(
         "check",
         "Report music-deck's own state: credentials, token, scopes, provider.",
@@ -952,7 +990,8 @@ def terse_help() -> str:
     lines += [
         "",
         "`plan` is the only verb that uses a model; everything else runs without one.",
-        f"`{PROG} check` needs no credentials and no network -- start there.",
+        f"New here? Run `{PROG} setup`: it needs no credentials and no network, "
+        "and names the one command to run next.",
         "",
         f"Run `{PROG} --help` for the complete listing: every argument, its type, and "
         "what each verb returns.",

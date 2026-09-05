@@ -357,7 +357,17 @@ def test_the_sweep_covers_every_verb_this_lane_owns():
     """
     from music_deck.cli import VERBS
 
-    owned_elsewhere = {"check", "manifest", "login", "disconnect", "whoami", "apply", "plan"}
+    # `setup` is MD-7's (cli.v1 Core 8); its coverage is tests/test_setup.py.
+    owned_elsewhere = {
+        "setup",
+        "check",
+        "manifest",
+        "login",
+        "disconnect",
+        "whoami",
+        "apply",
+        "plan",
+    }
     surface: set[str] = set()
     for verb in VERBS:
         if verb.subverbs:

@@ -21,8 +21,9 @@ requires:
     purpose: >
       music-deck ships no credentials. It runs under the caller's own Spotify
       Development Mode app, which supplies the client ID it authorises with, and
-      whose owner must hold Spotify Premium for the app to function at all.
-    install: docs/spotify-app.md
+      whose owner must hold Spotify Premium for the app to function at all. The
+      tool carries the registration steps itself: run `music-deck setup`.
+    install: https://github.com/bkrabach/amplifier-smart-tool-music-deck#registering-your-own-spotify-app
 ---
 
 # music-deck
@@ -65,6 +66,22 @@ skipped, and why.
   "no client ID" and "no token". Reporting a problem is its success.
 
 ## Worked invocations
+
+Install it:
+
+```
+uv tool install git+https://github.com/bkrabach/amplifier-smart-tool-music-deck
+```
+
+Then get from a fresh install to ready. `setup` reports what is configured and
+what is missing, carries the Spotify-app registration steps in full, and names
+the one command to run next. It never prompts:
+
+```
+music-deck setup
+music-deck setup --client-id <your client id>
+music-deck login
+```
 
 Confirm the install and read the current auth facts. Works with no credentials,
 no provider, and no network:

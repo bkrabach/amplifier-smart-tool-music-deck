@@ -40,6 +40,7 @@ from decimal import Decimal
 from typing import Any, Final, Protocol
 
 from music_deck.errors import MusicDeckError, NoProviderError
+from music_deck.setup_guide import install_with
 
 # --------------------------------------------------------------------------- #
 # Providers -- names, credentials, packages, extras
@@ -80,14 +81,39 @@ PROVIDER_EXTRA: Final[dict[str, str]] = {
 """The ``music-deck[<extra>]`` that installs a provider's stack. Never a base
 dependency: ``cli.v1`` Core 2 promises the deterministic verbs need none."""
 
+PROVIDER_SDK_PACKAGE: Final[dict[str, str]] = {
+    "anthropic": "anthropic",
+    "openai": "openai",
+    "gemini": "google-genai",
+    "azure-openai": "openai",
+}
+"""The distribution name to add to the tool environment for each provider. The
+extra above is the right answer for a ``pip``/``uv sync`` install; a uv **tool**
+install has no extras to add after the fact, so the package is named directly
+in ``uv tool install --force --with <package>``."""
+
 ENGINE_PACKAGE: Final = "amplifier_agent_lib"
-ENGINE_INSTALL_HINT: Final = (
-    'uv pip install "amplifier-agent @ git+https://github.com/microsoft/amplifier-agent@main"'
+ENGINE_REQUIREMENT: Final = (
+    "amplifier-agent @ git+https://github.com/microsoft/amplifier-agent@main"
 )
-"""How to install the engine. It is deliberately *not* a music-deck extra: it is
-not on PyPI, and it requires Python >= 3.12 where music-deck supports >= 3.11 --
-declaring it here would make `uv sync` unsatisfiable for a 3.11 caller who only
-ever wanted the deterministic verbs."""
+ENGINE_INSTALL_HINT: Final = install_with(f'"{ENGINE_REQUIREMENT}"')
+"""How to install the engine, in the form the documented install method takes.
+
+``cli.v1`` Core 4: a remedy "names what the reader HAS: a command their install
+method takes". music-deck is installed with ``uv tool install``, and a tool
+install owns a virtualenv ``uv pip install`` has no way to name -- so a remedy
+saying ``uv pip install`` is unusable by exactly the reader who needs it. The
+``uv tool install --force --with`` form adds a package to that environment,
+which is why every install remedy here is built from ``setup_guide.install_with``.
+
+The engine is deliberately *not* a music-deck extra: it is not on PyPI, and it
+requires Python >= 3.12 where music-deck supports >= 3.11 -- declaring it would
+make `uv sync` unsatisfiable for a 3.11 caller who only ever wanted the
+deterministic verbs."""
+
+ENGINE_INSTALL_HINT_PIP: Final = f'uv pip install "{ENGINE_REQUIREMENT}"'
+"""The same thing for a copy installed into a virtualenv with pip rather than as
+a uv tool. Offered second: the tool install is the documented method."""
 
 WORKSPACE: Final = "music-deck"
 
@@ -292,11 +318,16 @@ class AmplifierIntelligence:
         absent = missing_package(chosen)
         if absent is not None:
             extra = PROVIDER_EXTRA.get(chosen, chosen)
+            package = PROVIDER_SDK_PACKAGE.get(chosen, absent)
             raise NoModelSubstrate(
                 MISSING_PROVIDER_SDK,
                 f"Model provider {chosen!r} has a credential here but its Python "
                 f"SDK ({absent}) is not installed.",
-                f'Install the matching extra: uv pip install "music-deck[{extra}]". '
+                f"Add it to music-deck's own environment: {install_with(package)}"
+                f" -- that is the form a `uv tool install` takes, and the only one "
+                f"that reaches the tool's virtualenv. If you installed music-deck "
+                f"into a virtualenv instead, the extra works there: "
+                f'uv pip install "music-deck[{extra}]". '
                 "It is an extra and not a base dependency because every verb except "
                 "`plan` runs without it.",
             )
@@ -306,8 +337,9 @@ class AmplifierIntelligence:
                 MISSING_ENGINE,
                 f"The amplifier-agent engine library ({ENGINE_PACKAGE}) is not "
                 f"installed, so there is nothing to run the turn.",
-                f"Install it alongside music-deck: {ENGINE_INSTALL_HINT} "
-                f"(it needs Python >= 3.12).",
+                f"Add it to music-deck's own environment: {ENGINE_INSTALL_HINT} "
+                f"(it needs Python >= 3.12). In a virtualenv install instead: "
+                f"{ENGINE_INSTALL_HINT_PIP}.",
             )
 
         return chosen

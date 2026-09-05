@@ -181,8 +181,9 @@ def _client_id_fact(config: dict[str, Any] | None) -> dict[str, Any]:
         "source": None,
         "length": 0,
         "remedy": (
-            "Set MUSIC_DECK_CLIENT_ID, or put {\"client_id\": \"...\"} in "
-            f"{config_path()}. See docs/spotify-app.md."
+            "Run `music-deck setup --client-id <your client id>` to write it, "
+            "or set MUSIC_DECK_CLIENT_ID. Run `music-deck setup` with no "
+            "arguments for the steps to register a Spotify app."
         ),
     }
 
@@ -364,7 +365,7 @@ def _allowlist_fact() -> dict[str, Any]:
         "remedy": (
             "A 403 on a Development Mode app usually means this Spotify account is "
             "not on the app's allowlist. Add it under User Management in the Spotify "
-            "developer dashboard. See docs/spotify-app.md."
+            "developer dashboard. Run `music-deck setup` for the steps."
         ),
     }
 
@@ -435,7 +436,8 @@ def _check() -> dict[str, Any]:
     if not client_id["present"]:
         findings.append(
             "No Spotify client ID is configured. music-deck ships none by design -- "
-            "register your own app and set MUSIC_DECK_CLIENT_ID. See docs/spotify-app.md."
+            "register your own app, then run `music-deck setup --client-id <id>`. "
+            "Run `music-deck setup` for the steps."
         )
     if not redirect_uri["conforms"]:
         findings.append(f"Redirect URI {redirect_uri['value']!r}: {redirect_uri['detail']}")
@@ -460,7 +462,8 @@ def _check() -> dict[str, Any]:
     if allowlist["state"] == "suspect":
         findings.append(
             "A 403 was recorded. On a Development Mode app that usually means this "
-            "account is not on the app's allowlist. See docs/spotify-app.md."
+            "account is not on the app's allowlist. Run `music-deck setup` for the "
+            "steps, including User Management."
         )
     if config_problem is not None:
         findings.append(f"The config file at {config_path()} {config_problem}.")
