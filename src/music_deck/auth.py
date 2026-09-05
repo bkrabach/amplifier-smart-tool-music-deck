@@ -164,8 +164,9 @@ def require_client_id() -> tuple[str, str]:
         ErrorCode.USAGE,
         "No Spotify client ID is configured. music-deck ships none by design: "
         "you run it against your own Spotify app, under your own quota.",
-        f'Set {CLIENT_ID_ENV} (or {CLIENT_ID_ENV_ALIAS}), or put '
-        f'{{"client_id": "..."}} in {config_path()}. See docs/spotify-app.md.',
+        f'Run `music-deck setup --client-id <your client id>` to write it, or '
+        f'set {CLIENT_ID_ENV} (or {CLIENT_ID_ENV_ALIAS}). Run `music-deck setup` '
+        f'with no arguments for the steps to register a Spotify app.',
     )
 
 

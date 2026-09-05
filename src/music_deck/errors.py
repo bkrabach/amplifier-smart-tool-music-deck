@@ -129,7 +129,7 @@ REMEDIES: Final[dict[str, str]] = {
     # The rest carry the remedy their clause implies, in words a caller can act on.
     ErrorCode.NOT_ALLOWLISTED: (
         "Add this Spotify account to your app's allowlist under User Management in "
-        "the Spotify developer dashboard. See docs/spotify-app.md."
+        "the Spotify developer dashboard. Run `music-deck setup` for the steps."
     ),
     ErrorCode.PREMIUM_REQUIRED: (
         "Playback writes need Spotify Premium on the account being controlled."
