@@ -14,65 +14,57 @@ plan document is shaped lives in `contracts/plan.v1.md`.
 ## Core (the teeth)
 
 1. **One binary, `music-deck`, on PATH. Non-interactive.** A run with stdin
-   closed never hangs. `-h` gives a terse human summary; `--help` gives a
-   complete listing for an agent — every verb, its arguments, types, return
-   shape, and which verbs are model-backed. Help goes to stdout, exits 0, and
-   is the only non-JSON output the binary ever prints to stdout.
+   closed never hangs. `-h` gives a terse human summary; `--help` gives an agent
+   the complete listing — every verb, its arguments, types, return shape, and
+   which are model-backed. Help goes to stdout, exits 0, and is the only
+   non-JSON stdout the binary ever produces.
 2. **Deterministic verbs need no model provider.** Every verb except `plan`
    runs with no provider configured and no provider SDK installed. `check`
    additionally succeeds (exit 0) with no credentials and no network, in a
    fresh working directory — it is the smoke test; reporting problems IS its
-   success.
-   <details><summary>Details</summary>
-   Deterministic verbs: `check`, `login`, `disconnect`, `whoami`, `search`,
-   `track`, `album`, `artist`, `show`, `episode`, `playlists`,
-   `playlist items`, `playlist create|add|remove|reorder|rename`,
-   `library list|save|remove|contains`, `following`, `top`,
-   `recently-played`, `now-playing`, `devices`, `queue`, `play`, `pause`,
-   `next`, `previous`, `seek`, `volume`, `shuffle`, `repeat`, `transfer`,
-   `queue-add`, `apply`.
-   </details>
+   success. A verb added later is covered the day it lands.
 3. **`plan` is the only model-backed verb, and refuses before any prompt is
-   built.** Invoked without a usable model substrate, it exits 3 naming
-   exactly which precondition is missing — provider SDK not installed, no
-   provider configured, or no credentials in the environment — and how to fix
-   it. Never a silent fallback to a deterministic answer.
+   built.** Without a usable model substrate it exits 3, naming which
+   precondition is missing — SDK not installed, no provider configured, or no
+   credentials — and how to fix it. Never a silent deterministic fallback.
 4. **One JSON document per result.** Failure emits
    `{"error": {"code", "message", "remedy"}}` on stdout and exits non-zero;
    progress and diagnostics go to stderr, never to stdout. Every Spotify item
-   the tool emits carries its own `external_urls.spotify` link.
+   the tool emits carries its own `external_urls.spotify` link. A remedy — and
+   the manifest's `install` — names what the reader HAS: a command their install
+   method takes, or text the installed package carries. Never a source-tree path.
 5. **Exit codes are `0` success · `1` failure · `2` refusal, usage, or
    invalid input · `3` no provider configured** (model-backed verb only). All
    domain richness lives in `error.code`, not in more exit codes.
 6. **The refusal vocabulary is frozen.** Each code below names its trigger and
    its remedy:
    - `not_authenticated` — no valid token; remedy `music-deck login`.
-   - `reauthorization_required` — refresh rejected or past the 6-month
-     refresh wall; remedy `music-deck login`.
-   - `not_allowlisted` — the user is not on the app's Development Mode allowlist.
+   - `reauthorization_required` — refresh rejected, or past the 6-month refresh
+     wall; remedy `music-deck login`.
+   - `not_allowlisted` — not on the app's Development Mode allowlist.
    - `premium_required` — a playback write was attempted without Premium.
-   - `no_active_device` — no active Connect device; remedy: start playback
-     somewhere, or `transfer`.
-   - `rate_limited` — 429 without a quota reason; the tool honours
-     `Retry-After` for at most one bounded retry, then refuses carrying
-     `retry_after_s` — never an unbounded wait.
+   - `no_active_device` — none active; remedy: start playback, or `transfer`.
+   - `rate_limited` — 429, no quota reason; honours `Retry-After` for at most
+     one bounded retry, then refuses carrying `retry_after_s`. Never unbounded.
    - `quota_exceeded` — 429 reason `QUOTA_EXCEEDED`; not retryable by waiting.
-   - `partial_result` — documented partial completion, carrying a
-     `completeness` block naming what succeeded and failed — never a
-     silently truncated success.
-   - `playlist_items_unavailable` — items of a playlist the caller neither
-     owns nor collaborates on.
+   - `partial_result` — documented partial completion, carrying a `completeness`
+     block naming what succeeded and failed. Never a silent truncation.
+   - `playlist_items_unavailable` — items of a playlist the caller neither owns
+     nor collaborates on.
    - `invalid_plan` **[orchestrator-derived]** — a plan `apply` rejected under
      `plan.v1`, naming the offending path; exit 2.
 7. **The library is the tool.** Every CLI capability is reachable from the
    `music_deck` Python library; the manifest is exposed as structured data
    via `music_deck.manifest()` and via `music-deck manifest`.
+8. **`setup` gets a new caller from nothing to ready, without prompting.** It
+   reports what is configured and what is missing, carries the steps to
+   register a Spotify app in plain words, and writes the client ID when given
+   one. The browser step stays in `login`, still the only interactive verb.
 
 ## What v1 deliberately does NOT freeze
 
-- `diagnose`, a verb that reasons over the tool's own operational evidence —
-  promoted when real field failures arise that deterministic `check` cannot
-  explain.
+- `diagnose`, reasoning over the tool's own operational evidence — promoted
+  when field failures arise that deterministic `check` cannot explain.
 - `revise`, second-turn plan refinement — promoted when a real caller needs
   iteration a fresh `plan` cannot serve.
 - An MCP server surface — promoted when a consumer host speaks only MCP.
@@ -83,18 +75,26 @@ plan document is shaped lives in `contracts/plan.v1.md`.
 ## Conformance kit asserts
 
 - Upstream Smart Tools kit green at the pinned rev — merge gate.
-- Every deterministic verb passes with the model library absent and the
-  environment scrubbed of provider keys.
-- Every code in Core clause 6 is reachable via a fixture.
-- Malformed invocations produce the error envelope, non-zero exit, and
-  JSON-only stdout.
-- Structural refusal: an unconfigured model substrate refuses before any
-  prompt is built (exit 3).
+- Every deterministic verb passes with the model library absent and provider
+  keys scrubbed; every code in Core 6 is reachable via a fixture.
+- Malformed invocations produce the error envelope, non-zero exit, JSON-only
+  stdout; an unconfigured substrate refuses before any prompt (exit 3).
+- `setup`, stdin closed and nothing configured: exits 0, names what is missing.
+- Every path and command a remedy or `install` names resolves in an INSTALLED
+  copy — not only in the source tree.
 
 ## Reserved / open questions (NOT frozen)
 
-- Write fencing — an explicit `--confirmed` flag on mutating verbs (playlist
-  create/add/remove/reorder, playback writes, library save/remove).
-  Undecided; not negotiated.
+- Write fencing — a `--confirmed` flag on mutating verbs (playlist edits,
+  playback writes, library save/remove). Undecided; not negotiated.
 - Exact success-payload shapes per deterministic verb.
 - Multi-account, or multiple token caches.
+
+## Changelog
+
+- **2026-09-05 — ratified ("lgtm, ratified").** Added Core 8 (`setup`) and
+  extended Core 4: a remedy must be executable by its reader. Measured on a real
+  `uv tool install` of `b7f7334` — nothing wrote the client ID; `check`'s remedy
+  and the manifest's `install` both named `docs/spotify-app.md`, absent from the
+  package; the missing-SDK remedy said `uv pip install`, which a tool-installed
+  copy cannot use. Core 2's enumerated verb list went too: already stale.
