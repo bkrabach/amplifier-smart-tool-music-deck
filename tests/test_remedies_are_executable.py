@@ -346,7 +346,13 @@ def _static_strings() -> list[tuple[str, str]]:
     collected: list[tuple[str, str, str]] = []
     for module in sorted(PACKAGE_ROOT.rglob("*.py")):
         tree = ast.parse(module.read_text(encoding="utf-8"), filename=str(module))
-        label = f"{module.relative_to(REPO_ROOT)}"
+        # Relative to the checkout when there is one; absolute when this sweep
+        # is pointed at an installed copy instead (which is how the lane proved
+        # the rule against a real `uv tool install`, not only against `src/`).
+        try:
+            label = f"{module.relative_to(REPO_ROOT)}"
+        except ValueError:
+            label = str(module)
         for node in ast.walk(tree):
             if isinstance(node, (ast.Assign, ast.AnnAssign)):
                 targets = node.targets if isinstance(node, ast.Assign) else [node.target]
