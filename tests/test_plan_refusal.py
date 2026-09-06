@@ -270,15 +270,21 @@ def test_the_help_still_lists_plan_as_the_model_backed_verb(tmp_path):
 def test_a_base_install_imports_no_provider_sdk_and_no_engine(probe_import, tmp_path):
     """cli.v1 Core 2, and the lazy-import discipline that keeps it true.
 
-    ``amplifier_agent_lib`` counts here as much as the SDKs do: importing it
-    rewrites ``AMPLIFIER_HOME`` in the caller's own environment, which is not a
-    thing forty deterministic verbs should be able to do by being imported.
+    ``amplifier_agent`` counts here as much as the SDKs do. It is the engine
+    library ``plan`` runs on, and Core 2's promise is that the other forty verbs
+    run "with no provider configured and no provider SDK installed" -- a promise
+    about what a caller is charged for, which an import at module scope quietly
+    breaks whether or not the import happens to be cheap this week.
+
+    The two private-internals module names music-deck used before MD-10 are
+    listed too. If either ever reappears in ``sys.modules`` after importing
+    music-deck, something has gone back to booting the engine by its insides.
     """
     probe = (
         f"{probe_import}; import sys, json;"
         "print(json.dumps(sorted(m for m in sys.modules if m.split('.')[0] in "
-        "{'anthropic','openai','google','cohere','mistralai','amplifier_agent_lib',"
-        "'amplifier_agent_cli'})))"
+        "{'anthropic','openai','google','cohere','mistralai','amplifier_agent',"
+        "'amplifier_agent_lib','amplifier_agent_cli'})))"
     )
     result = subprocess.run(
         [sys.executable, "-c", probe],
@@ -299,7 +305,8 @@ def test_preflight_answers_without_importing_anything(scrubbed, tmp_path):
         "engine = AmplifierIntelligence();"
         "\ntry:\n    engine.preflight()\nexcept NoModelSubstrate:\n    pass\n"
         "print(json.dumps(sorted(m for m in sys.modules if m.split('.')[0] in "
-        "{'anthropic','openai','google','amplifier_agent_lib','amplifier_agent_cli'})))"
+        "{'anthropic','openai','google','amplifier_agent','amplifier_agent_lib',"
+        "'amplifier_agent_cli'})))"
     )
     env = {k: v for k, v in os.environ.items() if not _PROVIDER_ENV_RE.search(k)}
     result = subprocess.run(
