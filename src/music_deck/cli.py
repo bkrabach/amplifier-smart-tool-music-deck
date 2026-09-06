@@ -224,7 +224,10 @@ def _handle_apply(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _handle_login(args: argparse.Namespace) -> dict[str, Any]:
-    return run_login(timeout_s=float(getattr(args, "timeout", 180) or 180))
+    return run_login(
+        timeout_s=float(getattr(args, "timeout", 180) or 180),
+        no_browser=bool(getattr(args, "no_browser", False)),
+    )
 
 
 def _handle_disconnect(_args: argparse.Namespace) -> dict[str, Any]:
@@ -465,12 +468,25 @@ VERBS: Final[tuple[Verb, ...]] = (
                 "Seconds to wait for the browser round trip before refusing.",
                 default=180,
             ),
+            Arg(
+                "--no-browser",
+                "flag",
+                "Do not open a browser on this machine. The authorisation URL is "
+                "printed either way; use this when the browser you can see is "
+                "somewhere else.",
+            ),
         ),
         handler=_handle_login,
         detail=(
             "The only interactive verb. Every other verb refuses "
             "`not_authenticated`. Needs MUSIC_DECK_CLIENT_ID (or a client_id in "
-            "the config file): music-deck ships no credential of its own."
+            "the config file): music-deck ships no credential of its own. The "
+            "authorisation URL always goes to stderr before any browser is "
+            "attempted -- over ssh onto a host with a desktop, a browser opens "
+            "where nobody is sitting, so --no-browser skips it and the printed "
+            "URL (plus the `ssh -L` line for the port `check` reports) is what "
+            "you use. Ctrl-C while it waits is a refusal: the `cancelled` "
+            "envelope and exit 2, never a traceback."
         ),
     ),
     Verb(
@@ -1244,6 +1260,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     except MusicDeckError as exc:
         print(exc.message, file=sys.stderr)
         return emit_error(exc)
+    except KeyboardInterrupt:
+        # Deliberately its own clause, and deliberately not `except
+        # BaseException`: `issubclass(KeyboardInterrupt, Exception)` is False, so
+        # the clause below cannot see a Ctrl-C, and it used to escape `main()` as
+        # a stack trace through `listener.wait()`. `cli.v1` Core 6: a person
+        # stopping the tool is a refusal (`cancelled`, exit 2), never a
+        # traceback. SystemExit and the rest still travel as they always did.
+        path = str(getattr(args, "_path", "") or "").strip()
+        invocation = f"{PROG} {path}".strip()
+        print(f"\n{PROG}: cancelled.", file=sys.stderr)
+        return emit_error(
+            MusicDeckError(
+                ErrorCode.CANCELLED,
+                f"`{invocation}` was interrupted before it finished. Nothing was "
+                f"written.",
+            )
+        )
     except Exception as exc:  # noqa: BLE001 - a failure is loud, never a traceback
         print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
         return emit_error(

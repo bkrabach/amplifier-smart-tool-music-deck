@@ -21,6 +21,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import socket
 import stat
 import subprocess
@@ -480,3 +481,245 @@ def test_an_unauthenticated_verb_refuses_fast_and_never_opens_a_browser(
         # report of an empty deletion, not a refusal.
         assert result.returncode == EXIT_SUCCESS
         assert document["deleted"] == []
+
+
+# --------------------------------------------------------------------------- #
+# Headless login -- MD-11
+#
+# `cli.v1` Core 6's `cancelled`, and the two defects that came with it: a browser
+# opened on a display nobody is sitting at, and the authorisation URL withheld in
+# exactly that case. Core 4 keeps stdout to one JSON document, so every line of
+# guidance below is asserted on **stderr**.
+# --------------------------------------------------------------------------- #
+def _resolved_port() -> int:
+    """The port the shipping resolver returns -- the one `check` reports."""
+    return int(urllib.parse.urlsplit(os.environ["MUSIC_DECK_REDIRECT_URI"]).port)
+
+
+def test_login_shows_the_url_before_any_browser_and_even_when_one_opens(
+    monkeypatch, xdg_state, capsys
+):
+    """The steward's request, verbatim: show the URL, always.
+
+    A browser opening on this machine's display is not evidence the caller can
+    see it -- over ssh onto a host with a desktop it is evidence they cannot. So
+    the URL goes out first, and goes out anyway.
+    """
+    use_fake_transport(
+        monkeypatch,
+        FakeTransport([json_response(200, TOKEN_RESPONSE), json_response(200, ME_RESPONSE)]),
+    )
+    browser = BrowserStandIn()
+
+    result = login(timeout_s=10, open_browser=browser, stdin_isatty=lambda: False)
+
+    printed = capsys.readouterr()
+    assert result["signed_in"] is True
+    url = browser.urls[0]
+    assert url in printed.err, "the URL was withheld when a browser opened"
+    # Before anything else: the URL precedes the line about the browser opening.
+    assert printed.err.index(url) < printed.err.index("A browser was opened")
+    # And it is on a line of its own, so it can be copied in one go.
+    assert f"\n{url}\n" in printed.err
+    # cli.v1 Core 4: stdout carries the caller's JSON, never this guidance.
+    assert printed.out == ""
+
+
+def test_login_names_the_ssh_tunnel_on_the_resolved_port(
+    monkeypatch, xdg_state, capsys
+):
+    """boundary.v1 Core 4: the port `check` reports, never a hardcoded 8888."""
+    use_fake_transport(monkeypatch, FakeTransport())
+    port = _resolved_port()
+
+    with pytest.raises(MusicDeckError):
+        login(timeout_s=0.6, open_browser=lambda _url: True, stdin_isatty=lambda: False)
+
+    printed = capsys.readouterr()
+    assert f"ssh -L {port}:127.0.0.1:{port} " in printed.err
+    if port != 8888:  # the built-in default, which this run is deliberately not on
+        assert "ssh -L 8888:127.0.0.1:8888" not in printed.err
+
+
+def test_login_with_no_browser_never_calls_the_browser_opener(
+    monkeypatch, xdg_state, capsys
+):
+    """`--no-browser` is a promise about what is NOT done, so the opener is a spy.
+
+    With no browser and no terminal this would otherwise be `no_browser`; asked
+    for explicitly, an absent browser is the point, not a failure. What is left
+    is the ordinary bounded wait.
+    """
+    use_fake_transport(monkeypatch, FakeTransport())
+    calls: list[str] = []
+
+    with pytest.raises(MusicDeckError) as raised:
+        login(
+            timeout_s=0.6,
+            open_browser=lambda url: bool(calls.append(url)) or True,
+            stdin_isatty=lambda: False,
+            no_browser=True,
+        )
+
+    assert calls == [], "--no-browser opened a browser anyway"
+    assert raised.value.code == ErrorCode.NOT_AUTHENTICATED  # the wait timed out
+    assert raised.value.code != "no_browser"
+    printed = capsys.readouterr()
+    assert "https://accounts.spotify.com/authorize" in printed.err
+    port = _resolved_port()
+    assert f"ssh -L {port}:127.0.0.1:{port} " in printed.err
+    assert printed.out == ""
+
+
+def test_login_without_no_browser_still_refuses_when_nothing_can_authorise(
+    monkeypatch, xdg_state
+):
+    """The existing `no_browser` refusal is unchanged by the new flag."""
+    use_fake_transport(monkeypatch, FakeTransport())
+
+    with pytest.raises(MusicDeckError) as raised:
+        login(timeout_s=120, open_browser=lambda _url: False, stdin_isatty=lambda: False)
+
+    assert raised.value.code == "no_browser"
+
+
+def _login_env(tmp_path: Path, port: int) -> dict[str, str]:
+    environment = dict(os.environ)
+    environment.update(
+        {
+            "MUSIC_DECK_STATE_DIR": str(tmp_path / "state"),
+            "MUSIC_DECK_CONFIG_DIR": str(tmp_path / "config"),
+            "MUSIC_DECK_CLIENT_ID": "client-id-under-test",
+            "MUSIC_DECK_REDIRECT_URI": f"http://127.0.0.1:{port}",
+        }
+    )
+    return environment
+
+
+def test_a_ctrl_c_while_login_waits_is_a_refusal_not_a_traceback(tmp_path):
+    """cli.v1 Core 6 `cancelled`, proved by a real SIGINT to a real process.
+
+    `KeyboardInterrupt` is a `BaseException`, so `except Exception` in `main()`
+    could not see it and Python printed a stack trace through `listener.wait()`.
+    Core 4 requires the error envelope and a non-zero exit instead -- and Core 6
+    now names the code. Both halves are asserted: the envelope on stdout AND a
+    stderr with no traceback in it, because an exit code alone would not notice
+    the trace.
+    """
+    port = free_port()
+    environment = _login_env(tmp_path, port)
+    errors = tmp_path / "login-stderr.txt"
+
+    with errors.open("wb") as sink:
+        process = subprocess.Popen(
+            _argv() + ["login", "--no-browser", "--timeout", "120"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=sink,
+            text=True,
+            env=environment,
+        )
+        try:
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                if "accounts.spotify.com/authorize" in errors.read_text(
+                    encoding="utf-8", errors="replace"
+                ):
+                    break
+                time.sleep(0.1)
+            else:  # pragma: no cover - only on a broken build
+                process.kill()
+                pytest.fail("login never printed the authorisation URL")
+            process.send_signal(signal.SIGINT)
+            stdout, _ = process.communicate(timeout=30)
+        finally:
+            if process.poll() is None:  # pragma: no cover - only on a broken build
+                process.kill()
+
+    printed_err = errors.read_text(encoding="utf-8", errors="replace")
+    assert process.returncode == EXIT_REFUSAL, printed_err
+    document = json.loads(stdout)
+    assert document["error"]["code"] == ErrorCode.CANCELLED
+    assert document["error"]["remedy"].strip()
+    assert "Traceback" not in printed_err
+    assert "KeyboardInterrupt" not in printed_err
+    assert "socketserver" not in printed_err
+    # Core 4 again: nothing half-written on the way out.
+    assert not (tmp_path / "state" / "token.json").exists()
+
+
+def test_the_tunnel_line_names_the_port_check_reports(tmp_path):
+    """One value, two readers: what `login` prints is what `check` reports."""
+    port = free_port()
+    environment = _login_env(tmp_path, port)
+
+    checked = subprocess.run(
+        _argv() + ["check"],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=30,
+    )
+    reported = json.loads(checked.stdout)["redirect_uri"]["port"]
+
+    errors = tmp_path / "login-stderr.txt"
+    with errors.open("wb") as sink:
+        process = subprocess.Popen(
+            _argv() + ["login", "--no-browser", "--timeout", "120"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=sink,
+            text=True,
+            env=environment,
+        )
+        try:
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                if "ssh -L" in errors.read_text(encoding="utf-8", errors="replace"):
+                    break
+                time.sleep(0.1)
+            else:  # pragma: no cover - only on a broken build
+                pytest.fail("login never printed the tunnel line")
+            process.send_signal(signal.SIGINT)
+            process.communicate(timeout=30)
+        finally:
+            if process.poll() is None:  # pragma: no cover - only on a broken build
+                process.kill()
+
+    printed_err = errors.read_text(encoding="utf-8", errors="replace")
+    assert reported == port
+    assert f"ssh -L {reported}:127.0.0.1:{reported} " in printed_err
+
+
+def test_main_turns_a_keyboard_interrupt_into_the_cancelled_envelope(
+    monkeypatch, capsys
+):
+    """The unit-level twin of the SIGINT test: `main()` itself, no signals.
+
+    `issubclass(KeyboardInterrupt, Exception)` is False, so `main()`'s catch-all
+    never saw a Ctrl-C. This drives the separate clause that does, and checks
+    both halves of the promise -- the envelope on stdout, and a stderr with no
+    traceback in it.
+    """
+    import dataclasses
+
+    from music_deck import cli
+
+    def interrupted(_args):
+        raise KeyboardInterrupt
+
+    probe = dataclasses.replace(cli.VERBS_BY_NAME["login"], handler=interrupted)
+    monkeypatch.setattr(
+        cli, "VERBS", tuple(probe if verb.name == "login" else verb for verb in cli.VERBS)
+    )
+
+    code = cli.main(["login"])
+
+    printed = capsys.readouterr()
+    assert code == EXIT_REFUSAL
+    document = json.loads(printed.out)
+    assert document["error"]["code"] == ErrorCode.CANCELLED
+    assert "music-deck login" in document["error"]["message"]
+    assert document["error"]["remedy"].strip()
+    assert "Traceback" not in printed.err
