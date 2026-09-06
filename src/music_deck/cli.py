@@ -136,6 +136,7 @@ def _handle_setup(args: argparse.Namespace) -> dict[str, Any] | str:
     """
     document = run_setup(
         client_id=getattr(args, "client_id", None),
+        port=getattr(args, "port", None),
         show=bool(getattr(args, "show", False)),
         guide=bool(getattr(args, "guide", False)),
     )
@@ -399,6 +400,12 @@ VERBS: Final[tuple[Verb, ...]] = (
                 "Write this Spotify client ID to the config file.",
             ),
             Arg(
+                "--port",
+                "integer",
+                "Write this loopback port as the redirect URI music-deck will "
+                "bind, and name the value to register with Spotify.",
+            ),
+            Arg(
                 "--show",
                 "flag",
                 "Report only where the config, state, and token files live.",
@@ -422,7 +429,8 @@ VERBS: Final[tuple[Verb, ...]] = (
             "(cli.v1 Core 4). Run it with no arguments to see the gap you "
             "actually have and the steps that close it -- not the whole "
             "orientation, which is --guide; run it with --client-id to write "
-            "the id (config dir 0700, config file 0600). Exit 0 always -- "
+            "the id, or --port to write the redirect URI `login` will bind "
+            "(config dir 0700, config file 0600). Exit 0 always -- "
             "reporting what is missing is its success. An unusable --client-id "
             "is invalid input and refuses with exit 2, naming the shape."
         ),
