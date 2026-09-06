@@ -38,21 +38,21 @@ plan document is shaped lives in `contracts/plan.v1.md`.
 6. **The refusal vocabulary is frozen.** Each code below names its trigger and
    its remedy:
    - `not_authenticated` — no valid token; remedy `music-deck login`.
-   - `reauthorization_required` — refresh rejected, or past the 6-month wall;
-     remedy `music-deck login`. · `not_allowlisted` — not on the allowlist.
-   - `premium_required` — a playback write was attempted without Premium.
-   - `no_active_device` — none active; remedy: start playback, or `transfer`.
+   - `reauthorization_required` — refresh rejected, or past the 6-month wall.
+     Remedy `music-deck login`. · `not_allowlisted` — not on the allowlist. ·
+     `premium_required` — a playback write without Premium. · `no_active_device`
+     — none active; remedy: start playback, or `transfer`.
+   - `cancelled` — the caller interrupted an interactive wait (Ctrl-C during
+     `login`). A person stopping the tool is a refusal, never a traceback.
    - `rate_limited` — 429, no quota reason; honours `Retry-After` for one
-     bounded retry, then refuses carrying `retry_after_s`. Never unbounded. ·
-     `quota_exceeded` — 429 reason `QUOTA_EXCEEDED`; waiting does not help.
-   - `partial_result` — documented partial completion, carrying a `completeness`
-     block naming what succeeded and failed. Never a silent truncation.
+     bounded retry, then refuses carrying `retry_after_s`. Never unbounded.
+   - `quota_exceeded` — 429 reason `QUOTA_EXCEEDED`; waiting does not help. ·
+     `partial_result` — partial completion, carrying `completeness`.
    - `port_unavailable` — `login`'s registered port is taken; it names the port
-     and refuses rather than bind another Spotify would reject. Remedy: free it,
-     or `music-deck setup --port <n>` and re-register.
+     rather than bind another Spotify would reject. Remedy: free it, or
+     `music-deck setup --port <n>` and re-register.
    - `playlist_items_unavailable` — a playlist the caller neither owns nor
-     collaborates on. · `invalid_plan` — `apply` rejected it under `plan.v1`,
-     naming the offending path; exit 2.
+     collaborates on. · `invalid_plan` — rejected under `plan.v1`; exit 2.
 7. **The library is the tool.** Every CLI capability is reachable from the
    `music_deck` Python library; the manifest is exposed as structured data
    via `music_deck.manifest()` and via `music-deck manifest`.
@@ -64,20 +64,20 @@ plan document is shaped lives in `contracts/plan.v1.md`.
 
 ## What v1 deliberately does NOT freeze
 
-- `diagnose`, reasoning over the tool's own operational evidence — promoted when
-  field failures arise that `check` cannot explain.
-- `revise`, second-turn plan refinement — promoted when a caller needs iteration
-  a fresh `plan` cannot serve. · An MCP surface — when a host speaks only MCP.
+- `diagnose`, reasoning over the tool's own operational evidence — when field
+  failures arise that `check` cannot explain. · `revise`, second-turn plan
+  refinement. · An MCP surface — when a host speaks only MCP.
 - Progress or streaming for long-running smart calls. · A field-level
   success-payload schema — promoted when a consumer breaks on a field change.
 
 ## Conformance kit asserts
 
-- Upstream Smart Tools kit green at the pinned rev — merge gate.
-- Every deterministic verb passes with the model library absent and provider
-  keys scrubbed; every code in Core 6 is reachable via a fixture.
-- Malformed invocations produce the error envelope and a non-zero exit; an
-  unconfigured substrate refuses before any prompt (exit 3).
+- Upstream Smart Tools kit green at the pinned rev — merge gate. Every
+  deterministic verb passes with the model library absent and provider keys
+  scrubbed; every code in Core 6 is reachable via a fixture.
+- Malformed invocations, and an interrupted interactive wait, produce the error
+  envelope and a non-zero exit — never a traceback; an unconfigured substrate
+  refuses before any prompt (exit 3).
 - Every parsed result is one JSON document; guidance prose has a `--json` twin.
 - `setup`, stdin closed and nothing configured: exits 0, names what is missing,
   stays silent about what is not.
@@ -92,9 +92,9 @@ plan document is shaped lives in `contracts/plan.v1.md`.
 
 ## Changelog
 
-- **2026-09-06 — ratified ("ok, perfect, do it all" · "take it all the way
-  live").** Core 4 turns on what the output is FOR; Core 1 handed it the stdout
-  rule; Core 8 became proportional; `port_unavailable` joined Core 6 alongside
-  boundary.v1's fixed registered port.
+- **2026-09-06 — ratified ("do it all" · "take it all the way live").** Core 4
+  turns on what the output is FOR; Core 1 handed it the stdout rule; Core 8
+  became proportional; Core 6 gained `port_unavailable`, then `cancelled` when a
+  Ctrl-C during `login` surfaced as a traceback.
 - **2026-09-05 — ratified ("lgtm, ratified").** Added Core 8 (`setup`); extended
   Core 4 to executable remedies; dropped Core 2's stale verb list.
