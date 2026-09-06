@@ -79,7 +79,7 @@ from pathlib import Path
 from typing import Any, Callable, Final, Mapping
 
 from music_deck.check import (
-    DEFAULT_REDIRECT_URI,
+    LOOPBACK_HOST_LITERAL,
     REFRESH_TOKEN_WALL_DAYS,
     TOKEN_FILE_MODE,
     config_path,
@@ -97,8 +97,12 @@ ACCOUNTS_BASE: Final = "https://accounts.spotify.com"
 AUTHORIZE_URL: Final = f"{ACCOUNTS_BASE}/authorize"
 TOKEN_URL: Final = f"{ACCOUNTS_BASE}/api/token"
 
-LOOPBACK_HOST: Final = "127.0.0.1"
-"""``boundary.v1`` Core 4. The IP literal, never the name ``localhost``."""
+LOOPBACK_HOST: Final = LOOPBACK_HOST_LITERAL
+"""``boundary.v1`` Core 4. The IP literal, never the name ``localhost``.
+
+Aliased rather than spelled again: the host is half of the one value
+``check`` reports and ``login`` binds, and a second copy of it here is how two
+readers start to disagree."""
 
 CLIENT_ID_ENV: Final = "MUSIC_DECK_CLIENT_ID"
 CLIENT_ID_ENV_ALIAS: Final = "SPOTIFY_CLIENT_ID"
