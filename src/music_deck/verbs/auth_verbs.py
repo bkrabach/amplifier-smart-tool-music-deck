@@ -7,15 +7,23 @@ cached byte of Spotify content, and reports what it deleted."
 
 What "interactive" means here, exactly
 --------------------------------------
-``login`` opens a browser and waits a **bounded** time for Spotify to redirect
-back to the loopback port the caller registered -- the one
-``music_deck.check.resolve_redirect_uri`` returns and ``check`` reports, never
-one chosen at runtime (``boundary.v1`` Core 4). It never reads stdin -- nothing in
-music-deck ever does -- so ``cli.v1`` Core 1's "a run with stdin closed never
-hangs" survives even for this verb. The one case that cannot be served is *no
-browser opened and no terminal to paste a URL into*: that fails loud and
-immediately rather than waiting out the clock on an interaction that can never
-arrive.
+``login`` shows the authorisation URL, optionally opens a browser, and waits a
+**bounded** time for Spotify to redirect back to the loopback port the caller
+registered -- the one ``music_deck.check.resolve_redirect_uri`` returns and
+``check`` reports, never one chosen at runtime (``boundary.v1`` Core 4). It never
+reads stdin -- nothing in music-deck ever does -- so ``cli.v1`` Core 1's "a run
+with stdin closed never hangs" survives even for this verb. The one case that
+cannot be served is *no browser opened, no terminal to paste a URL into, and
+``--no-browser`` not asked for*: that fails loud and immediately rather than
+waiting out the clock on an interaction that can never arrive.
+
+The URL is printed **before** any browser is attempted, and printed even when one
+opens. The caller may be at a different machine than the display -- an ssh
+session onto a host that has a desktop opens a browser nobody is sitting in front
+of -- and that is precisely the case where the URL is needed, so withholding it
+there was the defect this shape fixes. ``--no-browser`` (``no_browser=True``)
+skips the opener entirely: on a headless host an absent browser is the point, not
+an error.
 
 Every other verb in music-deck reaches Spotify through :func:`spotify_client`,
 which refuses ``not_authenticated`` before a single request when there is no
@@ -43,7 +51,12 @@ from music_deck.auth import (
     token_file_mode,
     write_token,
 )
-from music_deck.check import resolve_redirect_uri, state_dir, token_path
+from music_deck.check import (
+    redirect_uri_parts,
+    resolve_redirect_uri,
+    state_dir,
+    token_path,
+)
 from music_deck.errors import ErrorCode, MusicDeckError
 from music_deck.http import SpotifyClient, Transport
 
@@ -78,7 +91,8 @@ def spotify_client(
 # login
 # --------------------------------------------------------------------------- #
 class NoBrowserError(MusicDeckError):
-    """No browser opened and no terminal to hand the URL to.
+    """No browser opened, no terminal to hand the URL to, and ``--no-browser``
+    was not asked for.
 
     Deliberately not one of ``cli.v1`` Core 6's frozen codes: it describes the
     machine music-deck is running on, not the state of the Spotify account, and
@@ -89,11 +103,14 @@ class NoBrowserError(MusicDeckError):
     def __init__(self, url: str) -> None:
         super().__init__(
             "no_browser",
-            "music-deck could not open a browser, and stdin is closed, so the "
-            "authorisation URL cannot be handed to you either. Authorising needs "
-            "one or the other.",
-            "Run `music-deck login` from an interactive terminal, or set BROWSER "
-            "to a command that opens a browser, then run it again.",
+            "music-deck could not open a browser here, and stdin is closed, so "
+            "there is nobody to hand the authorisation URL to either. Authorising "
+            "needs one or the other.",
+            "Run `music-deck login --no-browser` and open the URL it prints on "
+            "whatever machine your browser is on (it also prints the `ssh -L` "
+            "line if you need to forward the port), or run `music-deck login` "
+            "from an interactive terminal, or set BROWSER to a command that opens "
+            "a browser.",
             authorize_url=url,
         )
 
@@ -112,12 +129,60 @@ def _stdin_is_a_terminal() -> bool:
         return False
 
 
+def _tunnel_command(port: int | None) -> str:
+    """The `ssh -L` line that makes `login` work from another machine's browser.
+
+    The port is the **resolved** one -- what ``resolve_redirect_uri`` returned and
+    ``check`` reports (``boundary.v1`` Core 4), never a hardcoded default. The
+    user and host are this machine's own, so the line can be copied in one go;
+    each falls back to a placeholder rather than guessing when it cannot be read.
+    """
+    import getpass
+    import socket
+
+    try:
+        user = getpass.getuser()
+    except Exception:  # noqa: BLE001 - a nameless account is a placeholder, not a crash
+        user = "<user>"
+    try:
+        host = socket.gethostname() or "<host>"
+    except Exception:  # noqa: BLE001 - same
+        host = "<host>"
+    shown = port if port is not None else "<port>"
+    return f"ssh -L {shown}:127.0.0.1:{shown} {user}@{host}"
+
+
+def _announce(url: str, redirect_uri: str, timeout_s: float) -> None:
+    """Show the authorisation URL -- always, before any browser is attempted.
+
+    ``cli.v1`` Core 4: stdout carries the one JSON document a caller parses, so
+    this is stderr, and it is "written for its reader". The URL is on a line of
+    its own, unwrapped, so it can be copied in one go.
+
+    Always, because the caller may not be sitting at this machine's display. A
+    browser that opens on a server nobody is watching is exactly the case where
+    the URL was previously withheld -- the one case where it is needed most.
+    """
+    _host, port = redirect_uri_parts(redirect_uri)
+    print(
+        "\nmusic-deck login -- open this URL in a browser to authorise:\n"
+        f"\n{url}\n"
+        f"\nSpotify will then redirect to {redirect_uri}, which has to be "
+        "reachable\nfrom whichever machine that browser is on. If that is not "
+        "this machine,\nforward the port from there first:\n"
+        f"\n  {_tunnel_command(port)}\n"
+        f"\nWaiting up to {timeout_s:g}s for the redirect.\n",
+        file=sys.stderr,
+    )
+
+
 def login(
     *,
     timeout_s: float = DEFAULT_LOGIN_TIMEOUT_S,
     transport: Transport | None = None,
     open_browser: Callable[[str], bool] = _open_browser,
     stdin_isatty: Callable[[], bool] = _stdin_is_a_terminal,
+    no_browser: bool = False,
     scopes: tuple[str, ...] = DEFAULT_SCOPES,
     client_id: str | None = None,
     token_file: Path | None = None,
@@ -149,15 +214,34 @@ def login(
         redirect_uri = listener.redirect_uri
         url = authorize_url(resolved_id, redirect_uri, pkce.challenge, state, scopes)
 
-        opened = open_browser(url)
-        if not opened:
-            if not stdin_isatty():
-                raise NoBrowserError(url)
+        # The URL first, always -- before any browser is attempted. A browser
+        # that opens on a display nobody is watching is the case where the URL
+        # matters most, and it used to be the one case that withheld it.
+        _announce(url, redirect_uri, timeout_s)
+
+        if no_browser:
+            # An absent browser is not a failure here; it is what was asked for.
             print(
-                "music-deck could not open a browser. Open this URL to authorise:\n"
-                f"{url}",
+                "--no-browser: music-deck did not try to open one. Paste the URL "
+                "above\ninto the browser you are actually sitting at.",
                 file=sys.stderr,
             )
+        else:
+            opened = open_browser(url)
+            if opened:
+                print(
+                    "A browser was opened on THIS machine's display. If that is "
+                    "not where\nyou are, ignore it and use the URL above instead.",
+                    file=sys.stderr,
+                )
+            elif not stdin_isatty():
+                raise NoBrowserError(url)
+            else:
+                print(
+                    "music-deck could not open a browser here, so use the URL "
+                    "above.",
+                    file=sys.stderr,
+                )
 
         query = listener.wait(timeout_s)
     finally:
