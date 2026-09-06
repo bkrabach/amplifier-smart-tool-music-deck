@@ -22,8 +22,12 @@ by making the boundary something a reviewer can check.
 3. **The prompt transcript is an observable output of `plan`.** The result
    document carries `transcript` — the verbatim text of every prompt sent —
    so a caller or reviewer can verify clause 2 without reading code.
-4. **Auth is PKCE only, with the caller's own client ID.** Redirect URI is
-   `http://127.0.0.1:<ephemeral port>`, never `localhost`. The token lives at
+4. **Auth is PKCE only, with the caller's own client ID.** The redirect URI is
+   a loopback IP literal on a **fixed, registered port** — `http://127.0.0.1:8888`
+   by default, never `localhost` — and `login` binds exactly the port the caller
+   registered. One value, reported by `check` and used by `login`: a redirect URI
+   a caller can read but the tool does not honour is worse than none. Plain HTTP
+   only because the host is loopback. The token lives at
    `$XDG_STATE_HOME/music-deck/token.json`, mode `0600`. No client secret
    anywhere, and no credential ships with the tool.
 5. **`login` is the only interactive verb.** Every other verb fails
@@ -53,6 +57,9 @@ by making the boundary something a reviewer can check.
   real field failures arise that `check` cannot explain.
 - Client-credentials flow for catalog-only calls — decided no for v1;
   promoted if a real caller needs catalog access with no user account at all.
+- A dynamically chosen port, registered without one. Spotify's documentation
+  describes this for loopback literals; its dashboard refused a portless
+  registration on 2026-09-06. Promoted the day the dashboard accepts one.
 
 ## Conformance kit asserts
 
@@ -63,6 +70,9 @@ by making the boundary something a reviewer can check.
 - Removed-endpoint check: static (no removed path literal in source) and
   runtime (no request path matches the removed list).
 - The token file is created at mode `0600`.
+- The port `login` binds is the port `check` reports: one value, two readers.
+- `login` refuses loudly, naming the port, when that port is already in use --
+  it never silently picks another.
 - `disconnect` leaves no Spotify content on disk afterward.
 - `evidence/`: one live round-trip — `login` → `plan` → `apply` → the
   playlist exists — run by the owner against their own Development Mode app.
@@ -72,3 +82,12 @@ by making the boundary something a reviewer can check.
 
 - The `user-personalized` scope.
 - Whether a plan may carry a Spotify ID the caller typed in themselves.
+
+## Changelog
+
+- **2026-09-06 — ratified ("Yep, do it all, consider it ratified and take it all
+  the way live").** Core 4 moves from an ephemeral port to a fixed, registered
+  one. Spotify's dashboard refused a portless registration that day, while its
+  documentation still described exactly that; the dashboard is the reality a
+  caller meets. The old clause also let `login` bind a random port while `check`
+  reported a configured one, so the tool contradicted its own report.
