@@ -216,6 +216,17 @@ def test_complete_help_marks_plan_as_model_backed(scratch):
     assert complete.count("(model-backed)") == len(MODEL_BACKED_VERBS)
 
 
+def test_complete_help_lists_the_no_browser_flag_on_login(scratch):
+    """cli.v1 Core 1: --help is the complete listing an agent decides from, so a
+    flag that is not in it does not exist as far as a caller is concerned."""
+    complete = run("--help", cwd=scratch).stdout
+    assert "--no-browser" in complete
+    # `-h` stays the terse summary for a person: the verb, not its flags.
+    terse = run("-h", cwd=scratch).stdout
+    assert "login" in terse
+    assert "--no-browser" not in terse
+
+
 def test_complete_help_gives_arguments_types_and_return_shapes(scratch):
     complete = run("--help", cwd=scratch).stdout
     assert "arguments:" in complete
@@ -408,16 +419,20 @@ def test_apply_refuses_a_bad_plan_with_invalid_plan_naming_the_path(scratch):
 # --------------------------------------------------------------------------- #
 # Core 6 -- the frozen refusal vocabulary
 # --------------------------------------------------------------------------- #
-def test_the_frozen_vocabulary_is_exactly_the_ten_codes_the_contract_names():
+def test_the_frozen_vocabulary_is_exactly_the_codes_the_contract_names():
+    """Core 6 as ratified on 2026-09-06: ten codes, plus `port_unavailable`
+    (`4f4fbf6`) and `cancelled` (`fab12dc`)."""
     assert FROZEN_CODES == {
         "not_authenticated",
         "reauthorization_required",
         "not_allowlisted",
         "premium_required",
         "no_active_device",
+        "cancelled",
         "rate_limited",
         "quota_exceeded",
         "partial_result",
+        "port_unavailable",
         "playlist_items_unavailable",
         "invalid_plan",
     }

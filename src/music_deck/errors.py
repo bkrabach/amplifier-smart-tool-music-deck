@@ -19,7 +19,7 @@ Contracts served: ``cli.v1`` Core 4 (one JSON document per result), Core 5
 
 Codes outside the frozen vocabulary
 -----------------------------------
-``cli.v1`` Core 6 freezes ten *refusal* codes. Two failures a caller can
+``cli.v1`` Core 6 freezes twelve *refusal* codes. Two failures a caller can
 actually provoke are not refusals and are therefore not in that list, but Core 4
 still requires every failure to carry a code:
 
@@ -30,16 +30,18 @@ still requires every failure to carry a code:
   whose lane has not landed yet refuses loudly rather than pretending to work.
   Every one of these disappears as its lane lands; none is part of the promised
   surface, and no caller should ever branch on it.
-* ``port_unavailable`` -- ``login``'s loopback port is already in use.
-  ``boundary.v1`` Core 4, as rewritten on 2026-09-06, requires ``login`` to bind
-  the **registered** port and its kit assert requires it to "refuse loudly,
-  naming the port ... never silently pick another", so this is a real refusal
-  and exits ``2``. It is deliberately **not** in ``FROZEN_CODES``: Core 6's
-  vocabulary is ten codes and this lane does not own that clause. Amending Core 6
-  to name it is a steward call, recorded for the manager rather than taken here.
 
 Both are marked in ``FROZEN_CODES`` by their absence: that frozenset is exactly
-Core 6's ten, and it is what a conformance fixture should enumerate.
+Core 6's twelve, and it is what a conformance fixture should enumerate.
+
+Two codes that used to sit here have since been ratified into Core 6 itself, on
+2026-09-06, and moved up into ``FROZEN_CODES`` where the clause now names them:
+
+* ``port_unavailable`` -- ``login``'s registered loopback port is already in
+  use, so it refuses naming the port rather than binding another Spotify would
+  reject (added to Core 6 at ``4f4fbf6``).
+* ``cancelled`` -- the caller interrupted an interactive wait. Core 6: "A person
+  stopping the tool is a refusal, never a traceback" (added at ``fab12dc``).
 
 How the exit codes were derived
 -------------------------------
@@ -48,8 +50,8 @@ refusal / usage / invalid input, ``3`` no provider configured (model-backed verb
 only), and says "all domain richness lives in ``error.code``, not in more exit
 codes".
 
-Core 6 calls its ten codes "the refusal vocabulary". Refusals exit ``2``, so all
-ten map to ``2``; Core 6's own text confirms this for the one code it annotates
+Core 6 calls its twelve codes "the refusal vocabulary". Refusals exit ``2``, so
+all map to ``2``; Core 6's own text confirms this for the one code it annotates
 (``invalid_plan`` -- "exit 2"). ``usage`` is Core 5's own second exit-2
 category. Exit ``1`` is what is left: a genuine failure with no frozen code --
 an unreadable file, an upstream fault, an unhandled exception -- and the
@@ -86,27 +88,28 @@ EXIT_NO_PROVIDER: Final = 3
 class ErrorCode:
     """Every code music-deck may put in an error envelope.
 
-    The ten in ``FROZEN_CODES`` are frozen by ``cli.v1`` Core 6: their spelling
-    is part of the promise, and a caller may branch on them. The remaining two
-    are not (see the module docstring).
+    The twelve in ``FROZEN_CODES`` are frozen by ``cli.v1`` Core 6: their
+    spelling is part of the promise, and a caller may branch on them. The
+    remaining two are not (see the module docstring).
     """
 
-    # -- the frozen ten ----------------------------------------------------- #
+    # -- the frozen twelve, in Core 6's own order --------------------------- #
     NOT_AUTHENTICATED: Final = "not_authenticated"
     REAUTHORIZATION_REQUIRED: Final = "reauthorization_required"
     NOT_ALLOWLISTED: Final = "not_allowlisted"
     PREMIUM_REQUIRED: Final = "premium_required"
     NO_ACTIVE_DEVICE: Final = "no_active_device"
+    CANCELLED: Final = "cancelled"
     RATE_LIMITED: Final = "rate_limited"
     QUOTA_EXCEEDED: Final = "quota_exceeded"
     PARTIAL_RESULT: Final = "partial_result"
+    PORT_UNAVAILABLE: Final = "port_unavailable"
     PLAYLIST_ITEMS_UNAVAILABLE: Final = "playlist_items_unavailable"
     INVALID_PLAN: Final = "invalid_plan"
 
     # -- not frozen; see the module docstring ------------------------------- #
     USAGE: Final = "usage"
     NOT_IMPLEMENTED: Final = "not_implemented"
-    PORT_UNAVAILABLE: Final = "port_unavailable"
 
 
 FROZEN_CODES: Final[frozenset[str]] = frozenset(
@@ -116,14 +119,16 @@ FROZEN_CODES: Final[frozenset[str]] = frozenset(
         ErrorCode.NOT_ALLOWLISTED,
         ErrorCode.PREMIUM_REQUIRED,
         ErrorCode.NO_ACTIVE_DEVICE,
+        ErrorCode.CANCELLED,
         ErrorCode.RATE_LIMITED,
         ErrorCode.QUOTA_EXCEEDED,
         ErrorCode.PARTIAL_RESULT,
+        ErrorCode.PORT_UNAVAILABLE,
         ErrorCode.PLAYLIST_ITEMS_UNAVAILABLE,
         ErrorCode.INVALID_PLAN,
     }
 )
-"""Exactly the ten codes ``cli.v1`` Core 6 freezes, in that clause's order."""
+"""Exactly the twelve codes ``cli.v1`` Core 6 freezes, in that clause's order."""
 
 
 REMEDIES: Final[dict[str, str]] = {
@@ -135,6 +140,10 @@ REMEDIES: Final[dict[str, str]] = {
         "playback to one."
     ),
     # The rest carry the remedy their clause implies, in words a caller can act on.
+    ErrorCode.CANCELLED: (
+        "Nothing was written. Run `music-deck login` again when you are ready to "
+        "finish authorising in a browser."
+    ),
     ErrorCode.NOT_ALLOWLISTED: (
         "Add this Spotify account to your app's allowlist under User Management in "
         "the Spotify developer dashboard. Run `music-deck setup` for the steps."
@@ -179,7 +188,6 @@ _EXIT_BY_CODE: Final[dict[str, int]] = {
     **{code: EXIT_REFUSAL for code in FROZEN_CODES},
     ErrorCode.USAGE: EXIT_REFUSAL,
     ErrorCode.NOT_IMPLEMENTED: EXIT_FAILURE,
-    ErrorCode.PORT_UNAVAILABLE: EXIT_REFUSAL,
 }
 
 
