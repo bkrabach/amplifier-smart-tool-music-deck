@@ -16,40 +16,40 @@ plan document is shaped lives in `contracts/plan.v1.md`.
 1. **One binary, `music-deck`, on PATH. Non-interactive.** A run with stdin
    closed never hangs. `-h` summarises for a person; `--help` gives an agent
    every verb, its arguments, types, return shape, and which are model-backed.
-   Help goes to stdout and exits 0.
 2. **Deterministic verbs need no model provider.** Every verb except `plan` —
    including any added later — runs with no provider configured and no provider
-   SDK installed. `check` additionally succeeds (exit 0) with no credentials and
-   no network, in a fresh directory: it is the smoke test, and reporting
-   problems IS its success.
+   SDK installed. `check` additionally succeeds (exit 0) with no credentials, no
+   network, in a fresh directory: the smoke test, where reporting problems IS
+   success.
 3. **`plan` is the only model-backed verb, and refuses before any prompt is
-   built.** Without a usable model substrate it exits 3, naming which
-   precondition is missing — SDK not installed, no provider configured, or no
-   credentials — and how to fix it. Never a silent deterministic fallback.
+   built.** Without a usable model substrate it exits 3, naming the missing
+   precondition — SDK, provider, or credentials — and the fix. Never a silent
+   deterministic fallback.
 4. **Structure what a caller parses; write what a caller reads.** A result a
    caller acts on is one JSON document, each Spotify item carrying its
    `external_urls.spotify` link; failure emits `{"error": {"code", "message",
-   "remedy"}}` with a non-zero exit; diagnostics go to stderr. A verb whose
-   result is guidance writes it for its reader, with `--json` for the same
-   content structured: addressability nobody uses is not free. A remedy — and
-   the manifest's `install` — names what the reader HAS: a command their install
-   method takes, or text the package carries. Never a source-tree path.
+   "remedy"}}` with a non-zero exit; diagnostics go to stderr. Guidance is
+   written for its reader, with `--json` for the same content structured:
+   addressability nobody uses is not free. A remedy — and the manifest's
+   `install` — names what the reader HAS, never a source-tree path.
 5. **Exit codes are `0` success · `1` failure · `2` refusal, usage, or
    invalid input · `3` no provider configured** (model-backed verb only). All
    domain richness lives in `error.code`, not in more exit codes.
 6. **The refusal vocabulary is frozen.** Each code below names its trigger and
    its remedy:
    - `not_authenticated` — no valid token; remedy `music-deck login`.
-   - `reauthorization_required` — refresh rejected, or past the 6-month refresh
-     wall; remedy `music-deck login`.
-   - `not_allowlisted` — not on the app's Development Mode allowlist.
+   - `reauthorization_required` — refresh rejected, or past the 6-month wall;
+     remedy `music-deck login`. · `not_allowlisted` — not on the allowlist.
    - `premium_required` — a playback write was attempted without Premium.
    - `no_active_device` — none active; remedy: start playback, or `transfer`.
-   - `rate_limited` — 429, no quota reason; honours `Retry-After` for at most
-     one bounded retry, then refuses carrying `retry_after_s`. Never unbounded.
-   - `quota_exceeded` — 429 reason `QUOTA_EXCEEDED`; not retryable by waiting.
+   - `rate_limited` — 429, no quota reason; honours `Retry-After` for one
+     bounded retry, then refuses carrying `retry_after_s`. Never unbounded. ·
+     `quota_exceeded` — 429 reason `QUOTA_EXCEEDED`; waiting does not help.
    - `partial_result` — documented partial completion, carrying a `completeness`
      block naming what succeeded and failed. Never a silent truncation.
+   - `port_unavailable` — `login`'s registered port is taken; it names the port
+     and refuses rather than bind another Spotify would reject. Remedy: free it,
+     or `music-deck setup --port <n>` and re-register.
    - `playlist_items_unavailable` — a playlist the caller neither owns nor
      collaborates on. · `invalid_plan` — `apply` rejected it under `plan.v1`,
      naming the offending path; exit 2.
@@ -64,13 +64,12 @@ plan document is shaped lives in `contracts/plan.v1.md`.
 
 ## What v1 deliberately does NOT freeze
 
-- `diagnose`, reasoning over the tool's own operational evidence — promoted
-  when field failures arise that deterministic `check` cannot explain.
+- `diagnose`, reasoning over the tool's own operational evidence — promoted when
+  field failures arise that `check` cannot explain.
 - `revise`, second-turn plan refinement — promoted when a caller needs iteration
   a fresh `plan` cannot serve. · An MCP surface — when a host speaks only MCP.
-- Progress or streaming for long-running smart calls.
-- A field-level success-payload schema per deterministic verb — promoted when
-  a real consumer breaks on a field change.
+- Progress or streaming for long-running smart calls. · A field-level
+  success-payload schema — promoted when a consumer breaks on a field change.
 
 ## Conformance kit asserts
 
@@ -81,20 +80,21 @@ plan document is shaped lives in `contracts/plan.v1.md`.
   unconfigured substrate refuses before any prompt (exit 3).
 - Every parsed result is one JSON document; guidance prose has a `--json` twin.
 - `setup`, stdin closed and nothing configured: exits 0, names what is missing,
-  and stays silent about what is not.
+  stays silent about what is not.
 - Every path and command a remedy or `install` names resolves in an INSTALLED
-  copy — not only in the source tree.
+  copy.
 
 ## Reserved / open questions (NOT frozen)
 
 - Write fencing — a `--confirmed` flag on mutating verbs (playlist edits,
   playback writes, library save/remove). Undecided; not negotiated.
-- Exact success-payload shapes per deterministic verb.
-- Multi-account, or multiple token caches.
+- Exact success-payload shapes per verb. · Multi-account, or multiple tokens.
 
 ## Changelog
 
-- **2026-09-06 — ratified ("ok, perfect, do it all").** Core 4 turns on what the
-  output is FOR; Core 1 handed it the stdout rule; Core 8 became proportional.
+- **2026-09-06 — ratified ("ok, perfect, do it all" · "take it all the way
+  live").** Core 4 turns on what the output is FOR; Core 1 handed it the stdout
+  rule; Core 8 became proportional; `port_unavailable` joined Core 6 alongside
+  boundary.v1's fixed registered port.
 - **2026-09-05 — ratified ("lgtm, ratified").** Added Core 8 (`setup`); extended
   Core 4 to executable remedies; dropped Core 2's stale verb list.
