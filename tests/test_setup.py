@@ -354,17 +354,31 @@ def _strings(document, key: str | None = None, path: str = ""):
         yield path, key, document
 
 
-def _documents(isolated_paths) -> dict[str, dict]:
-    """One of every shape `setup` can return, from one fixture."""
-    return {
+def _documents(monkeypatch) -> dict[str, dict]:
+    """One of every shape `setup` can return, including its conditional parts.
+
+    The last two exist because a document key that only appears sometimes is
+    exactly the kind that gets added to the structured form and forgotten in the
+    prose: ``note`` (the environment variable that wins over the file just
+    written) and the redirect-URI gap, which is the one gap with no command to
+    run at the end of it.
+    """
+    documents = {
         "report": setup(),
         "configured": setup(client_id=GOOD_ID),
         "paths": setup(show=True),
         "guide": setup(guide=True),
     }
+    with monkeypatch.context() as patch:
+        patch.setenv("MUSIC_DECK_CLIENT_ID", GOOD_ID)
+        documents["configured-but-env-wins"] = setup(client_id=GOOD_ID)
+    with monkeypatch.context() as patch:
+        patch.setenv("MUSIC_DECK_REDIRECT_URI", "http://localhost:8080")
+        documents["bad-redirect"] = setup()
+    return documents
 
 
-def test_the_prose_carries_every_fact_the_json_twin_carries(isolated):
+def test_the_prose_carries_every_fact_the_json_twin_carries(isolated, monkeypatch):
     """Core 4: "with `--json` for the same content structured".
 
     The structural half of the promise is in the code: ``render`` takes the
@@ -372,8 +386,14 @@ def test_the_prose_carries_every_fact_the_json_twin_carries(isolated):
     other half -- nothing the document carries may be dropped on the way to the
     reader -- checked over every shape `setup` has.
     """
+    shapes = _documents(monkeypatch)
+    # A helper that quietly stopped producing the conditional parts would make
+    # this test pass by having nothing to check, so it is checked.
+    assert "note" in shapes["configured-but-env-wins"]
+    assert any(gap["what"] == "redirect_uri" for gap in shapes["bad-redirect"]["missing"])
+
     missed: list[str] = []
-    for shape, document in _documents(isolated).items():
+    for shape, document in shapes.items():
         prose = _normalise(render(document))
         for path, key, value in _strings(document):
             if key in IDENTIFIER_KEYS or not value.strip():
@@ -384,9 +404,9 @@ def test_the_prose_carries_every_fact_the_json_twin_carries(isolated):
     assert not missed, "\n".join(missed)
 
 
-def test_the_exempted_keys_really_are_identifiers_and_not_prose(isolated):
+def test_the_exempted_keys_really_are_identifiers_and_not_prose(isolated, monkeypatch):
     """The exemption above is only honest if nothing readable hides behind it."""
-    for document in _documents(isolated).values():
+    for document in _documents(monkeypatch).values():
         for _, key, value in _strings(document):
             if key in IDENTIFIER_KEYS:
                 assert re.fullmatch(r"[a-z][a-z_]*", value), (key, value)
