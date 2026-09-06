@@ -680,5 +680,9 @@ def render(document: dict[str, Any]) -> str:
     if action == "paths":
         return _render_paths(document)
     if action == "guide":
-        return setup_guide.render()
+        # The URI comes out of the document, not out of the resolver a second
+        # time. Re-resolving here would let the prose and its `--json` twin
+        # disagree whenever the configured value changed between the two calls --
+        # the very drift this split exists to prevent.
+        return setup_guide.render((document.get("spotify_app") or {}).get("redirect_uri"))
     return _render_report(document)
