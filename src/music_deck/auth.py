@@ -1,9 +1,13 @@
 """PKCE authorisation against the caller's own Spotify app, and the token cache.
 
-``boundary.v1`` Core 4, verbatim: "Auth is PKCE only, with the caller's own
-client ID. Redirect URI is ``http://127.0.0.1:<ephemeral port>``, never
-``localhost``. The token lives at ``$XDG_STATE_HOME/music-deck/token.json``, mode
-``0600``. No client secret anywhere, and no credential ships with the tool."
+``boundary.v1`` Core 4, verbatim (rewritten 2026-09-06): "Auth is PKCE only, with
+the caller's own client ID. The redirect URI is a loopback IP literal on a
+**fixed, registered port** -- ``http://127.0.0.1:8888`` by default, never
+``localhost`` -- and ``login`` binds exactly the port the caller registered. One
+value, reported by ``check`` and used by ``login``: a redirect URI a caller can
+read but the tool does not honour is worse than none. Plain HTTP only because the
+host is loopback. The token lives at ``$XDG_STATE_HOME/music-deck/token.json``,
+mode ``0600``. No client secret anywhere, and no credential ships with the tool."
 
 Every one of those is load-bearing, and each has a reason drawn from evidence
 rather than habit (``investigation/B-spotify-api-reality.md``):
@@ -17,12 +21,15 @@ rather than habit (``investigation/B-spotify-api-reality.md``):
 * **``127.0.0.1``, never ``localhost``.** Spotify's redirect-URI rules, enforced
   for new apps since 2025-04-09: "``localhost`` is not allowed as redirect URI"
   (B section 1.3). The string in nearly every pre-2025 tutorial is now rejected.
-* **An ephemeral port, registered without one.** Also Spotify's own rule: "If
-  you don't know the port number in advance, register your redirect URI with a
-  loopback IP literal, but without any port number. You can add the dynamically
-  assigned port number to the redirect URI in the authorization request ... this
-  is only supported for loopback IP literals" (B section 1.3). So the port is
-  bound at runtime and appears only in the authorisation request.
+* **A fixed, registered port -- not an ephemeral one.** Spotify's documentation
+  says the opposite: "If you don't know the port number in advance, register your
+  redirect URI with a loopback IP literal, but without any port number" (B
+  section 1.3). Its dashboard refused exactly that registration on 2026-09-06,
+  and the dashboard is the reality a caller meets. So the port is resolved once
+  by :func:`music_deck.check.resolve_redirect_uri` -- the same call ``check``
+  makes -- and :class:`LoopbackReceiver` binds that port or refuses naming it.
+  The whole URI stays overridable via ``MUSIC_DECK_REDIRECT_URI`` for a caller
+  whose dashboard demands something else again.
 * **The six-month wall.** "Refresh tokens issued to apps registered in the
   Developer Dashboard have a lifetime of 6 months" and "refreshing an access
   token does not extend the refresh token's lifetime" (B section 1.4). music-deck
@@ -44,7 +51,7 @@ keys, so the shape is a shared surface between the two modules:
       "scopes":        ["user-read-private", "..."],
       "expires_at":    "2026-09-04T12:00:00+00:00",   // ISO 8601, UTC
       "authorized_at": "2026-09-04T11:00:00+00:00",   // when `login` last ran
-      "redirect_uri":  "http://127.0.0.1:41234",      // the port that was bound
+      "redirect_uri":  "http://127.0.0.1:8888",       // the registered URI, bound
       "client_id":     "..."             // not a secret; PKCE has no secret
     }
 
@@ -63,6 +70,7 @@ import http.server
 import json
 import os
 import secrets
+import socket
 import stat
 import urllib.parse
 from dataclasses import dataclass
@@ -71,9 +79,14 @@ from pathlib import Path
 from typing import Any, Callable, Final, Mapping
 
 from music_deck.check import (
+    LOOPBACK_HOST_LITERAL,
     REFRESH_TOKEN_WALL_DAYS,
     TOKEN_FILE_MODE,
     config_path,
+    redirect_uri_parts,
+    redirect_uri_remedy,
+    redirect_uri_shape,
+    resolve_redirect_uri,
     state_dir,
     token_path,
 )
@@ -84,8 +97,12 @@ ACCOUNTS_BASE: Final = "https://accounts.spotify.com"
 AUTHORIZE_URL: Final = f"{ACCOUNTS_BASE}/authorize"
 TOKEN_URL: Final = f"{ACCOUNTS_BASE}/api/token"
 
-LOOPBACK_HOST: Final = "127.0.0.1"
-"""``boundary.v1`` Core 4. The IP literal, never the name ``localhost``."""
+LOOPBACK_HOST: Final = LOOPBACK_HOST_LITERAL
+"""``boundary.v1`` Core 4. The IP literal, never the name ``localhost``.
+
+Aliased rather than spelled again: the host is half of the one value
+``check`` reports and ``login`` binds, and a second copy of it here is how two
+readers start to disagree."""
 
 CLIENT_ID_ENV: Final = "MUSIC_DECK_CLIENT_ID"
 CLIENT_ID_ENV_ALIAS: Final = "SPOTIFY_CLIENT_ID"
@@ -219,7 +236,7 @@ def authorize_url(
 
 
 # --------------------------------------------------------------------------- #
-# The loopback receiver -- an ephemeral port, bound at runtime
+# The loopback receiver -- the fixed, registered port, and no other
 # --------------------------------------------------------------------------- #
 class _CallbackHandler(http.server.BaseHTTPRequestHandler):
     """Catches Spotify's redirect and hands the query back to the receiver."""
@@ -253,24 +270,65 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
         """Silence. ``cli.v1`` Core 4 keeps stdout for the one JSON document."""
 
 
-class LoopbackReceiver:
-    """A one-shot HTTP server on ``127.0.0.1:<ephemeral port>``.
+class _IPv6Server(http.server.HTTPServer):
+    """``HTTPServer`` for an ``[::1]`` redirect URI. Same server, other family."""
 
-    Port ``0`` asks the kernel for a free port, which is then read back and put
-    into the redirect URI -- the dynamic-port arrangement Spotify documents for
-    loopback IP literals, and the reason the app is registered without a port.
+    address_family = socket.AF_INET6
+
+
+class LoopbackReceiver:
+    """A one-shot HTTP server on **the registered redirect URI**, or nothing.
+
+    ``boundary.v1`` Core 4, rewritten 2026-09-06: the redirect URI is a loopback
+    IP literal on a *fixed, registered* port, and "``login`` binds exactly the
+    port the caller registered. One value, reported by ``check`` and used by
+    ``login``." So this takes that value -- from
+    :func:`music_deck.check.resolve_redirect_uri`, the one resolver ``check``
+    reads too -- and binds precisely it.
+
+    What it deliberately does **not** do is fall back. Port ``0`` (ask the kernel
+    for any free port) is exactly how the tool used to contradict its own report:
+    ``check`` said one URI, ``login`` sent another, and Spotify rejected the
+    registration the caller had been told to make. A port that is taken is
+    therefore a loud refusal naming the port, never a quiet substitution.
     """
 
-    def __init__(self, host: str = LOOPBACK_HOST) -> None:
-        self._server = http.server.HTTPServer((host, 0), _CallbackHandler)
-        self._server.callback_query = None  # type: ignore[attr-defined]
-        self.host = host
-        self.port: int = self._server.server_address[1]
+    def __init__(self, redirect_uri: str | None = None) -> None:
+        self.redirect_uri: str = redirect_uri or resolve_redirect_uri()[0]
 
-    @property
-    def redirect_uri(self) -> str:
-        """``http://127.0.0.1:<port>`` -- never ``localhost``, never HTTPS."""
-        return f"http://{self.host}:{self.port}"
+        conforms, detail = redirect_uri_shape(self.redirect_uri)
+        if not conforms:
+            raise MusicDeckError(
+                ErrorCode.USAGE,
+                f"The redirect URI {self.redirect_uri!r} cannot be used: {detail}",
+                redirect_uri_remedy(self.redirect_uri),
+                redirect_uri=self.redirect_uri,
+            )
+
+        host, port = redirect_uri_parts(self.redirect_uri)
+        self.host: str = host
+        self.port: int = int(port)  # redirect_uri_shape has proved it is a port
+
+        server_class = _IPv6Server if ":" in host else http.server.HTTPServer
+        try:
+            self._server = server_class((host, self.port), _CallbackHandler)
+        except OSError as exc:
+            raise MusicDeckError(
+                ErrorCode.PORT_UNAVAILABLE,
+                f"Port {self.port} on {host} is already in use, so music-deck "
+                f"cannot receive Spotify's redirect at {self.redirect_uri} "
+                f"({exc.strerror or exc}). It will not bind a different port: the "
+                f"port it binds has to be the one your Spotify app has "
+                f"registered.",
+                f"Free port {self.port}, or choose another and register it: run "
+                f"`music-deck setup --port <n>`, set the app's redirect URI to "
+                f"http://{host}:<n> in the Spotify dashboard, then run "
+                f"`music-deck login` again. `music-deck check` reports the port "
+                f"music-deck will use.",
+                port=self.port,
+                redirect_uri=self.redirect_uri,
+            ) from exc
+        self._server.callback_query = None  # type: ignore[attr-defined]
 
     def wait(self, timeout_s: float, clock: Callable[[], float] | None = None) -> dict[str, str]:
         """Serve until the redirect arrives, or refuse when the time is up.
@@ -461,8 +519,9 @@ def exchange_code(
             "Spotify refused the authorisation code "
             f"({response.status}): {_error_text(payload)}",
             "Run `music-deck login` again. If it keeps failing, check that the "
-            "client ID belongs to an app whose redirect URI is http://127.0.0.1 "
-            "(registered without a port).",
+            "client ID belongs to an app whose registered redirect URI is exactly "
+            f"{redirect_uri} -- `music-deck check` reports the value music-deck "
+            "sends, and it has to match the dashboard character for character.",
         )
     moment = now()
     return _token_document(
@@ -517,7 +576,7 @@ def refresh_token_document(
     return _token_document(
         payload,
         client_id=str(resolved_client_id),
-        redirect_uri=str(token.get("redirect_uri") or f"http://{LOOPBACK_HOST}"),
+        redirect_uri=str(token.get("redirect_uri") or resolve_redirect_uri()[0]),
         authorized_at=authorized_at,
         previous=token,
         issued_at=now(),

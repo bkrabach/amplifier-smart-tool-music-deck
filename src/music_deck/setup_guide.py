@@ -74,34 +74,69 @@ CLIENT_ID_SHAPE: Final = (
 # --------------------------------------------------------------------------- #
 # The client-ID gap, and only that gap
 # --------------------------------------------------------------------------- #
-CLIENT_ID_STEPS: Final[tuple[str, ...]] = (
-    f"Go to {DASHBOARD_URL}, sign in, choose Create app, and tick Web API.",
-    "Set the redirect URI to exactly http://127.0.0.1 -- no port, and never "
-    "http://localhost. Spotify rejects the name `localhost` even though it "
-    "means the same thing to your machine, and music-deck adds a freshly "
-    "chosen port at sign-in time, which Spotify permits only for a loopback "
-    "IP literal.",
-    "Copy the Client ID from the app's settings page -- the client ID, not "
-    "the client secret. music-deck never asks for a secret and never stores "
-    "one; a tool that asks you for one is not doing PKCE.",
-    "Open User Management and add the Spotify account of everyone who will "
-    "use the app, yourself included. Skipping this is the usual cause of a "
-    "403 that looks like a bug in the tool.",
-)
-"""The steps that close the client-ID gap, and nothing else.
+def client_id_steps(redirect_uri: str | None = None) -> tuple[str, ...]:
+    """The steps that close the client-ID gap, and nothing else.
 
-``cli.v1`` Core 8 asks for "the steps for that gap -- proportional to the gap,
-not the whole orientation every run, which is on request". These four are what a
-caller with no client ID has to do; :func:`steps` is the whole orientation, and
-``music-deck setup --guide`` is the request.
+    ``cli.v1`` Core 8 asks for "the steps for that gap -- proportional to the
+    gap, not the whole orientation every run, which is on request". These four
+    are what a caller with no client ID has to do; :func:`steps` is the whole
+    orientation, and ``music-deck setup --guide`` is the request.
 
-The two facts that measurably cost people an afternoon are carried here in full
-rather than summarised, because a summary of them is what fails: the redirect URI
-is the literal ``http://127.0.0.1`` with no port and never ``localhost``, and the
-value to copy is the client ID, never the client secret. Both also appear in
-:func:`steps`; ``tests/test_setup.py`` asserts the two forms agree, so the short
-path cannot quietly lose what the long path says.
-"""
+    The redirect URI is **taken from the resolver**, never written down here:
+    ``boundary.v1`` Core 4 makes it one value that ``check`` reports and ``login``
+    binds, so the string this tells a caller to register has to be that same
+    value. Guidance naming a URI the tool does not use is precisely the defect
+    this argument exists to prevent.
+
+    The two facts that measurably cost people an afternoon are carried in full
+    rather than summarised, because a summary of them is what fails: the redirect
+    URI is the loopback IP literal *with its port* and never ``localhost``, and
+    the value to copy is the client ID, never the client secret. Both also appear
+    in :func:`steps`; ``tests/test_setup.py`` asserts the two forms agree, so the
+    short path cannot quietly lose what the long path says.
+    """
+    uri = redirect_uri or _resolved_redirect_uri()
+    return (
+        f"Go to {DASHBOARD_URL}, sign in, choose Create app, and tick Web API.",
+        f"Set the redirect URI to exactly {uri} -- that whole string, port and "
+        "all, and never http://localhost. Spotify's dashboard refuses a "
+        "registration with no port (whatever its documentation says), and "
+        "rejects the name `localhost` even though it means the same thing to "
+        "your machine. music-deck binds exactly this port when you sign in, and "
+        "`music-deck check` reports the value it will send.",
+        "Copy the Client ID from the app's settings page -- the client ID, not "
+        "the client secret. music-deck never asks for a secret and never stores "
+        "one; a tool that asks you for one is not doing PKCE.",
+        "Open User Management and add the Spotify account of everyone who will "
+        "use the app, yourself included. Skipping this is the usual cause of a "
+        "403 that looks like a bug in the tool.",
+    )
+
+
+def __getattr__(name: str) -> Any:
+    """``setup_guide.CLIENT_ID_STEPS`` -- the steps for the redirect URI in force.
+
+    This was a module constant until ``boundary.v1`` Core 4 made the redirect URI
+    a resolved value rather than a fixed string. A constant would have to be
+    built at import time, before the environment that decides that value has been
+    read, so the name now answers with :func:`client_id_steps` each time it is
+    asked. Callers reading it see the steps for the URI music-deck will actually
+    use, which is the only version of them worth printing.
+    """
+    if name == "CLIENT_ID_STEPS":
+        return client_id_steps()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _resolved_redirect_uri() -> str:
+    """The redirect URI music-deck will actually use -- the one resolver.
+
+    Imported inside the function so this module stays inert data that can be read
+    without importing the rest of the package.
+    """
+    from music_deck.check import resolve_redirect_uri
+
+    return resolve_redirect_uri()[0]
 
 
 # --------------------------------------------------------------------------- #
@@ -126,14 +161,19 @@ CONSTRAINTS: Final[tuple[str, ...]] = (
 # --------------------------------------------------------------------------- #
 # The steps
 # --------------------------------------------------------------------------- #
-def steps() -> list[dict[str, Any]]:
+def steps(redirect_uri: str | None = None) -> list[dict[str, Any]]:
     """The registration steps, in order, as structured data.
 
     Returned fresh each call so a caller may edit the result without changing
     what the next caller sees. ``cli.v1`` Core 4 wants one JSON document per
     result, so these are data rather than a wall of Markdown: an agent can read
     ``steps[2]["do"]`` and a person can read the same words.
+
+    ``redirect_uri`` defaults to the resolved one, for the reason
+    :func:`client_id_steps` gives: the string a caller is told to register is the
+    string the tool will send.
     """
+    uri = redirect_uri or _resolved_redirect_uri()
     return [
         {
             "step": 1,
@@ -166,24 +206,28 @@ def steps() -> list[dict[str, Any]]:
         },
         {
             "step": 3,
-            "title": "Set the redirect URI to exactly http://127.0.0.1",
+            "title": f"Set the redirect URI to exactly {uri}",
             "do": [
-                "Enter exactly: http://127.0.0.1",
-                "Leave the port off. music-deck adds a freshly chosen port at "
-                "sign-in time (http://127.0.0.1:<port>), which Spotify permits "
-                "only for a loopback IP literal -- so music-deck never squats "
-                "on a fixed port.",
+                f"Enter exactly: {uri}",
+                "Keep the port. Spotify's own documentation says a loopback "
+                "literal may be registered without one; its dashboard refuses "
+                "that registration, and the dashboard is what you are typing "
+                "into. music-deck binds this exact port at sign-in.",
                 "Do not spell it http://localhost. Spotify rejects the name "
                 "`localhost` even though it means the same thing to your "
                 "machine; the IP literal is required.",
                 "Plain http is allowed here and only here, because 127.0.0.1 "
                 "(or [::1]) is a loopback address.",
+                "Want a different port? Run `music-deck setup --port <n>` and "
+                "register http://127.0.0.1:<n> instead -- or set "
+                "MUSIC_DECK_REDIRECT_URI to whatever your dashboard accepted. "
+                "Both feed the one value `check` reports and `login` binds.",
             ],
             "why": (
                 "This is the one field that silently costs people an "
-                "afternoon. boundary.v1 Core 4 requires the loopback IP "
-                "literal, and `music-deck check` reports whether yours "
-                "conforms."
+                "afternoon. boundary.v1 Core 4 requires a loopback IP literal "
+                "on a fixed, registered port, and `music-deck check` reports "
+                "the exact value music-deck will send."
             ),
         },
         {
@@ -264,8 +308,9 @@ AFTERWARDS: Final[tuple[str, ...]] = (
 )
 
 
-def guide() -> dict[str, Any]:
+def guide(redirect_uri: str | None = None) -> dict[str, Any]:
     """The whole registration guide as one structured block."""
+    uri = redirect_uri or _resolved_redirect_uri()
     return {
         "summary": (
             "music-deck ships no credentials. It runs under your own Spotify "
@@ -274,13 +319,14 @@ def guide() -> dict[str, Any]:
         ),
         "dashboard": DASHBOARD_URL,
         "before_you_start": list(CONSTRAINTS),
-        "steps": steps(),
+        "steps": steps(uri),
+        "redirect_uri": uri,
         "afterwards": list(AFTERWARDS),
         "client_id_shape": CLIENT_ID_SHAPE,
     }
 
 
-def render() -> str:
+def render(redirect_uri: str | None = None) -> str:
     """The same guide as plain text, for a human reading it in a terminal.
 
     This is what ``music-deck setup --guide`` prints. ``cli.v1`` Core 4, as
@@ -291,11 +337,12 @@ def render() -> str:
     reaches this text (``tests/test_setup.py`` asserts it), so a reader who runs
     one form is never shown less than the other.
     """
-    document = guide()
+    uri = redirect_uri or _resolved_redirect_uri()
+    document = guide(uri)
     lines: list[str] = ["Registering your own Spotify app", ""]
     lines += [document["summary"], "", "Before you start:"]
     lines += [f"  - {item}" for item in CONSTRAINTS]
-    for entry in steps():
+    for entry in steps(uri):
         lines += ["", f"Step {entry['step']} -- {entry['title']}"]
         lines += [f"  {item}" for item in entry["do"]]
         lines += [f"  ({entry['why']})"]
