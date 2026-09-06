@@ -24,7 +24,13 @@ nothing, and requires no credential -- ``music_deck.verbs.setup`` renders it.
 
 from __future__ import annotations
 
+import textwrap
 from typing import Any, Final
+
+WIDTH: Final = 78
+"""How wide prose is wrapped, here and in ``music_deck.verbs.setup``. Long
+enough to read, narrow enough to survive a terminal nobody widened. Defined once
+so the two renderings of the same words do not disagree about the shape."""
 
 DASHBOARD_URL: Final = "https://developer.spotify.com/dashboard"
 REVOKE_URL: Final = "https://www.spotify.com/account/apps/"
@@ -63,6 +69,39 @@ CLIENT_ID_SHAPE: Final = (
     f"at {DASHBOARD_URL} -- the field labelled Client ID, never the client "
     "secret (music-deck never asks for one)."
 )
+
+
+# --------------------------------------------------------------------------- #
+# The client-ID gap, and only that gap
+# --------------------------------------------------------------------------- #
+CLIENT_ID_STEPS: Final[tuple[str, ...]] = (
+    f"Go to {DASHBOARD_URL}, sign in, choose Create app, and tick Web API.",
+    "Set the redirect URI to exactly http://127.0.0.1 -- no port, and never "
+    "http://localhost. Spotify rejects the name `localhost` even though it "
+    "means the same thing to your machine, and music-deck adds a freshly "
+    "chosen port at sign-in time, which Spotify permits only for a loopback "
+    "IP literal.",
+    "Copy the Client ID from the app's settings page -- the client ID, not "
+    "the client secret. music-deck never asks for a secret and never stores "
+    "one; a tool that asks you for one is not doing PKCE.",
+    "Open User Management and add the Spotify account of everyone who will "
+    "use the app, yourself included. Skipping this is the usual cause of a "
+    "403 that looks like a bug in the tool.",
+)
+"""The steps that close the client-ID gap, and nothing else.
+
+``cli.v1`` Core 8 asks for "the steps for that gap -- proportional to the gap,
+not the whole orientation every run, which is on request". These four are what a
+caller with no client ID has to do; :func:`steps` is the whole orientation, and
+``music-deck setup --guide`` is the request.
+
+The two facts that measurably cost people an afternoon are carried here in full
+rather than summarised, because a summary of them is what fails: the redirect URI
+is the literal ``http://127.0.0.1`` with no port and never ``localhost``, and the
+value to copy is the client ID, never the client secret. Both also appear in
+:func:`steps`; ``tests/test_setup.py`` asserts the two forms agree, so the short
+path cannot quietly lose what the long path says.
+"""
 
 
 # --------------------------------------------------------------------------- #
@@ -244,12 +283,17 @@ def guide() -> dict[str, Any]:
 def render() -> str:
     """The same guide as plain text, for a human reading it in a terminal.
 
-    Never printed to stdout by the CLI -- ``cli.v1`` Core 4 keeps stdout to one
-    JSON document -- but a library caller holding this text can print it, and a
-    test can read it, without re-deriving the wording.
+    This is what ``music-deck setup --guide`` prints. ``cli.v1`` Core 4, as
+    rewritten on 2026-09-06, says "a verb whose result is guidance writes it for
+    its reader, with ``--json`` for the same content structured" -- so this text
+    is the default shape of ``--guide`` and :func:`guide` is its twin. Both are
+    built from the same constants above, and every string :func:`guide` carries
+    reaches this text (``tests/test_setup.py`` asserts it), so a reader who runs
+    one form is never shown less than the other.
     """
+    document = guide()
     lines: list[str] = ["Registering your own Spotify app", ""]
-    lines += [guide()["summary"], "", "Before you start:"]
+    lines += [document["summary"], "", "Before you start:"]
     lines += [f"  - {item}" for item in CONSTRAINTS]
     for entry in steps():
         lines += ["", f"Step {entry['step']} -- {entry['title']}"]
@@ -257,4 +301,25 @@ def render() -> str:
         lines += [f"  ({entry['why']})"]
     lines += ["", "Afterwards:"]
     lines += [f"  - {item}" for item in AFTERWARDS]
-    return "\n".join(lines)
+    lines += ["", f"The client ID's shape: {document['client_id_shape']}"]
+    return "\n".join(wrapped for line in lines for wrapped in _fill(line))
+
+
+def _fill(line: str) -> list[str]:
+    """One line, wrapped to :data:`WIDTH`, keeping its own indent.
+
+    A URL, a command or a client ID is never split: ``break_long_words`` and
+    ``break_on_hyphens`` are both off, so every token a reader might copy
+    survives intact.
+    """
+    if not line.strip():
+        return [""]
+    indent = line[: len(line) - len(line.lstrip())]
+    return textwrap.wrap(
+        line.strip(),
+        width=WIDTH,
+        initial_indent=indent,
+        subsequent_indent=indent + ("  " if indent else ""),
+        break_long_words=False,
+        break_on_hyphens=False,
+    ) or [line]

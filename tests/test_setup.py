@@ -1,14 +1,17 @@
-"""`setup` gets a new caller from nothing to ready, and never asks a question.
+"""`setup` speaks to its reader, and never asks a question.
 
-Contracts served: ``cli.v1`` Core 8 ("`setup` gets a new caller from nothing to
-ready, without prompting. It reports what is configured and what is missing,
-carries the steps to register a Spotify app in plain words, and writes the
-client ID when given one"), Core 1 ("Non-interactive. A run with stdin closed
-never hangs"), Core 4 (one JSON document per result; the error envelope), Core 5
-(exit ``2`` for invalid input), and ``boundary.v1`` Core 4 (private file modes)
-applied to the config file `setup` writes.
+Contracts served: ``cli.v1`` Core 8 as amended 2026-09-06 ("`setup` gets a new
+caller from nothing to ready, without prompting. It reports what is configured,
+what is missing, and the steps for that gap -- proportional to the gap, not the
+whole orientation every run, which is on request"), Core 4 as rewritten the same
+day ("Structure what a caller parses; write what a caller reads ... A verb whose
+result is guidance writes it for its reader, with ``--json`` for the same content
+structured"), Core 1 ("Non-interactive. A run with stdin closed never hangs"),
+Core 5 (exit ``2`` for invalid input), and ``boundary.v1`` Core 4 (private file
+modes) applied to the config file `setup` writes.
 
-The two claims worth being careful about are asserted the hard way:
+Four claims are asserted the hard way, because each has a plausible-looking way
+of being wrong:
 
 * **"never prompts"** is not asserted by reading the source for ``input()``. The
   CLI is run as a real subprocess with stdin closed *and* a wall-clock deadline,
@@ -17,6 +20,14 @@ The two claims worth being careful about are asserted the hard way:
 * **"config file 0600"** is read back off the filesystem with ``stat`` after the
   write, under a deliberately loose umask -- a write that relied on the caller's
   umask would land 0644 and fail.
+* **"the prose and the ``--json`` twin cannot drift"** is not asserted by
+  eyeballing a few phrases. Every string the document carries is required to
+  reach the prose, whitespace-normalised, over four different shapes of run --
+  so a fact added to one form and forgotten in the other fails here.
+* **"proportional"** is asserted by *absence*: a caller who already has a model
+  provider is checked for never seeing the word. A report that merely reordered
+  the same complete orientation would pass a "names the gap" test and fail this
+  one.
 """
 
 from __future__ import annotations
@@ -33,7 +44,12 @@ import pytest
 
 from music_deck import setup_guide
 from music_deck.errors import EXIT_REFUSAL, EXIT_SUCCESS, ErrorCode, MusicDeckError
-from music_deck.verbs.setup import normalize_client_id, setup, write_client_id
+from music_deck.verbs.setup import (
+    normalize_client_id,
+    render,
+    setup,
+    write_client_id,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -96,14 +112,15 @@ def test_setup_with_nothing_configured_reports_and_exits_zero(isolated):
     result = setup()
 
     assert result["action"] == "report"
-    assert result["configured"]["client_id"]["present"] is False
+    assert result["ready"] is False
+    assert result["have"] == []  # nothing configured, so nothing to report as such
     assert {gap["what"] for gap in result["missing"]} >= {"client_id", "authorization"}
     assert result["next_command"] == "music-deck setup --client-id <your client id>"
 
 
-def test_setup_carries_the_registration_steps_in_the_document(isolated):
-    """Core 8: it "carries the steps to register a Spotify app in plain words"."""
-    guide = setup()["spotify_app"]
+def test_setup_guide_carries_the_registration_steps_on_request(isolated):
+    """Core 8: the whole orientation, "which is on request" -- `setup --guide`."""
+    guide = setup(guide=True)["spotify_app"]
 
     assert [entry["step"] for entry in guide["steps"]] == [1, 2, 3, 4, 5, 6, 7]
     text = json.dumps(guide)
@@ -143,9 +160,9 @@ def test_setup_never_reads_stdin_and_never_hangs(tmp_path):
     )
 
     assert result.returncode == EXIT_SUCCESS
-    document = json.loads(result.stdout)  # Core 4: exactly one JSON document
-    assert document["action"] == "report"
-    assert document["missing"]
+    # Core 4: guidance is written for its reader, so stdout is prose, not JSON.
+    assert result.stdout.startswith("music-deck ")
+    assert "are missing:" in result.stdout
 
 
 def test_setup_show_names_the_three_paths(isolated):
@@ -303,3 +320,214 @@ def test_setup_is_reachable_from_the_library(isolated):
     import music_deck
 
     assert music_deck.setup(show=True)["action"] == "paths"
+
+
+# --------------------------------------------------------------------------- #
+# Core 4 -- prose for its reader, `--json` for the same content structured
+# --------------------------------------------------------------------------- #
+def _normalise(text: str) -> str:
+    """Collapse whitespace, so wrapping cannot count as a difference.
+
+    The prose is wrapped to fit a terminal; the JSON is not. Comparing them
+    literally would fail on line breaks alone, which is not drift -- so both
+    sides are reduced to their words before anything is compared.
+    """
+    return " ".join(text.split())
+
+
+# Two keys in the document are machine identifiers rather than sentences: a
+# caller branches on them, no reader reads them. Every *other* string has to
+# reach the prose. The test below proves these two really are identifiers
+# rather than a convenient exemption for prose somebody forgot to render.
+IDENTIFIER_KEYS = {"action", "what"}
+
+
+def _strings(document, key: str | None = None, path: str = ""):
+    """Every string leaf in a document, with the key it sat under."""
+    if isinstance(document, dict):
+        for name, value in document.items():
+            yield from _strings(value, name, f"{path}.{name}" if path else name)
+    elif isinstance(document, list):
+        for index, item in enumerate(document):
+            yield from _strings(item, key, f"{path}[{index}]")
+    elif isinstance(document, str):
+        yield path, key, document
+
+
+def _documents(isolated_paths) -> dict[str, dict]:
+    """One of every shape `setup` can return, from one fixture."""
+    return {
+        "report": setup(),
+        "configured": setup(client_id=GOOD_ID),
+        "paths": setup(show=True),
+        "guide": setup(guide=True),
+    }
+
+
+def test_the_prose_carries_every_fact_the_json_twin_carries(isolated):
+    """Core 4: "with `--json` for the same content structured".
+
+    The structural half of the promise is in the code: ``render`` takes the
+    document and nothing else, so the prose cannot invent a fact. This is the
+    other half -- nothing the document carries may be dropped on the way to the
+    reader -- checked over every shape `setup` has.
+    """
+    missed: list[str] = []
+    for shape, document in _documents(isolated).items():
+        prose = _normalise(render(document))
+        for path, key, value in _strings(document):
+            if key in IDENTIFIER_KEYS or not value.strip():
+                continue
+            if _normalise(value) not in prose:
+                missed.append(f"{shape}: {path} = {value!r} never reaches the prose")
+
+    assert not missed, "\n".join(missed)
+
+
+def test_the_exempted_keys_really_are_identifiers_and_not_prose(isolated):
+    """The exemption above is only honest if nothing readable hides behind it."""
+    for document in _documents(isolated).values():
+        for _, key, value in _strings(document):
+            if key in IDENTIFIER_KEYS:
+                assert re.fullmatch(r"[a-z][a-z_]*", value), (key, value)
+
+
+def test_the_json_twin_is_one_document_and_the_default_is_prose(tmp_path):
+    """Both shapes, through the real binary, for the same run."""
+    scratch = tmp_path / "elsewhere"
+    scratch.mkdir()
+    environment = {
+        "MUSIC_DECK_CONFIG_DIR": str(tmp_path / "config"),
+        "MUSIC_DECK_STATE_DIR": str(tmp_path / "state"),
+    }
+
+    prose = run_cli("setup", cwd=scratch, timeout=5.0, **environment)
+    structured = run_cli("setup", "--json", cwd=scratch, timeout=5.0, **environment)
+
+    assert prose.returncode == EXIT_SUCCESS
+    assert structured.returncode == EXIT_SUCCESS
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(prose.stdout)  # prose, deliberately
+    document = json.loads(structured.stdout)  # exactly one JSON document
+    assert document["action"] == "report"
+    assert {gap["what"] for gap in document["missing"]} >= {"client_id"}
+
+
+def test_the_prose_names_the_two_facts_that_cost_people_an_afternoon(tmp_path):
+    """Core 8's "the steps for that gap", for the gap a new caller actually has.
+
+    The redirect URI and the client-ID-not-secret distinction are the two things
+    the evidence says people get wrong, so they are asserted on the *default*
+    run -- not on `--guide`, which a new caller has no reason to type.
+    """
+    scratch = tmp_path / "elsewhere"
+    scratch.mkdir()
+    result = run_cli(
+        "setup",
+        cwd=scratch,
+        timeout=5.0,
+        MUSIC_DECK_CONFIG_DIR=str(tmp_path / "config"),
+        MUSIC_DECK_STATE_DIR=str(tmp_path / "state"),
+    )
+    prose = _normalise(result.stdout)
+
+    assert result.returncode == EXIT_SUCCESS
+    assert "http://127.0.0.1" in prose
+    assert "never http://localhost" in prose
+    assert "the client ID, not the client secret" in prose
+    # And the one command that closes the gap it just described.
+    assert "music-deck setup --client-id <your client id>" in prose
+
+
+def test_the_report_is_proportional_and_never_mentions_a_provider_it_has(
+    isolated, monkeypatch
+):
+    """Core 8: "proportional to the gap, not the whole orientation every run".
+
+    A caller who has already configured a model provider has no gap there. The
+    kit assert says `setup` "stays silent about what is not" -- so the word does
+    not appear, in either shape. A report that printed everything and merely
+    reordered it would pass every other test in this file and fail this one.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "not-a-real-key")
+
+    document = setup()
+    prose = render(document)
+    structured = json.dumps(document)
+
+    assert {gap["what"] for gap in document["missing"]} == {"client_id", "authorization"}
+    for shape in (prose, structured):
+        assert "provider" not in shape.lower()
+        assert "ANTHROPIC" not in shape
+        assert "plan" not in shape.lower()
+
+
+def test_the_default_report_leaves_the_whole_orientation_for_the_flag(isolated):
+    """The measured defect this item exists to fix, asserted as absence.
+
+    The shipped shape printed the whole guide on every run -- the quota
+    politics, the six-month refresh wall, `disconnect` -- for a caller whose
+    only gap was the client ID. None of it appears now unless it is asked for.
+    """
+    report = render(setup())
+    orientation = render(setup(guide=True))
+
+    # Four things the orientation says and the default report has no business
+    # saying: the refresh wall, removing your data, and both halves of the
+    # quota politics a caller registering their first app cannot act on.
+    for phrase in ("six months", "disconnect", "quarter of a million", "resubscribe"):
+        assert phrase not in report, phrase
+        assert phrase in orientation, phrase
+    # And the report says where the rest is, rather than dropping it silently.
+    assert "music-deck setup --guide" in report
+
+
+def test_the_prose_is_smaller_than_the_json_twin_for_the_same_gap(isolated):
+    """Core 4: "addressability nobody uses is not free" -- measured, not assumed."""
+    document = setup()
+    prose = render(document)
+    structured = json.dumps(document, indent=2)
+
+    assert len(prose.encode("utf-8")) < len(structured.encode("utf-8"))
+
+
+def test_check_is_still_one_json_document_and_not_prose(tmp_path):
+    """`check`'s result is parsed, not read: an agent branches on it.
+
+    This item changed `setup` and deliberately did not change `check`. Asserted
+    here rather than assumed, because "make the output friendly" is exactly the
+    kind of change that spreads to the verb next door.
+    """
+    scratch = tmp_path / "elsewhere"
+    scratch.mkdir()
+    result = run_cli(
+        "check",
+        cwd=scratch,
+        timeout=5.0,
+        MUSIC_DECK_CONFIG_DIR=str(tmp_path / "config"),
+        MUSIC_DECK_STATE_DIR=str(tmp_path / "state"),
+    )
+
+    assert result.returncode == EXIT_SUCCESS
+    assert json.loads(result.stdout)["client_id"]["present"] is False
+
+
+def test_the_short_client_id_steps_and_the_full_guide_agree(isolated):
+    """The condensed path may not quietly lose what the long path says."""
+    short = _normalise(" ".join(setup_guide.CLIENT_ID_STEPS))
+    full = _normalise(setup_guide.render())
+
+    for fact in ("http://127.0.0.1", "localhost", "client secret", "User Management"):
+        assert fact in short, fact
+        assert fact in full, fact
+
+
+def test_setup_render_is_reachable_from_the_library(isolated):
+    """cli.v1 Core 7: every CLI capability is reachable from the library.
+
+    The prose is a capability of the binary, so a Python caller can produce it
+    too -- otherwise the CLI would hold something the library cannot.
+    """
+    import music_deck
+
+    assert music_deck.setup_render(music_deck.setup(show=True)).startswith("music-deck")
