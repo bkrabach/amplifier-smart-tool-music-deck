@@ -73,12 +73,15 @@ Install it:
 uv tool install git+https://github.com/bkrabach/amplifier-smart-tool-music-deck
 ```
 
-Then get from a fresh install to ready. `setup` reports what is configured and
-what is missing, carries the Spotify-app registration steps in full, and names
-the one command to run next. It never prompts:
+Then get from a fresh install to ready. `setup` writes prose a person reads: the
+gap you actually have, the steps that close it, and the one command to run next.
+`--json` returns the same content structured, and `--guide` prints the whole
+Spotify-app orientation on request. It never prompts:
 
 ```
 music-deck setup
+music-deck setup --json
+music-deck setup --guide
 music-deck setup --client-id <your client id>
 music-deck login
 ```

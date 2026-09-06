@@ -15,16 +15,17 @@ needs no credentials and no network.
 ## From nothing to ready
 
 ```
-music-deck setup                            # what is configured, what is missing
+music-deck setup                            # the gap you have, and how to close it
 music-deck setup --client-id <your id>      # write the client ID (config 0600)
 music-deck login                            # authorise, once, in a browser
 music-deck check                            # confirm
 ```
 
 `music-deck setup` never prompts and never reads stdin. Run it with no arguments
-and it reports what is missing, carries the whole Spotify-app registration guide,
-and names the single next command to run. `login` is the only interactive verb
-there is.
+and it writes prose a person reads: what is missing, the steps that close *that*
+gap, and the single next command to run — not the whole orientation every time,
+which is `music-deck setup --guide`. `--json` returns the same content structured
+for anything that parses. `login` is the only interactive verb there is.
 
 Then:
 
@@ -46,13 +47,14 @@ minutes and needs a Spotify account with **Premium**.
 **The steps ship inside the tool.** Run:
 
 ```
-music-deck setup
+music-deck setup --guide
 ```
 
-and read the `spotify_app` block: the Development Mode ceiling, creating the app,
-the exact redirect URI (`http://127.0.0.1`, no port, never `localhost`), copying
-the client ID (never the client secret), the five-user allowlist, and signing in.
-It works offline, from any install, with no checkout anywhere.
+and read it: the Development Mode ceiling, creating the app, the exact redirect
+URI (`http://127.0.0.1`, no port, never `localhost`), copying the client ID
+(never the client secret), the five-user allowlist, and signing in. It works
+offline, from any install, with no checkout anywhere. Plain `music-deck setup`
+gives you the shorter version — only the steps for the gap you actually have.
 
 The same material is in [`docs/spotify-app.md`](docs/spotify-app.md) for anyone
 reading this repository. That file is *not* what any remedy points at:
