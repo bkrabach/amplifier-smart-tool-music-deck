@@ -233,6 +233,99 @@ def test_writing_the_client_id_keeps_other_config_keys(isolated):
     assert document["client_id"] == GOOD_ID
 
 
+# --------------------------------------------------------------------------- #
+# boundary.v1 Core 4 -- `setup --port` writes the ONE redirect URI
+# --------------------------------------------------------------------------- #
+def test_setup_port_writes_the_redirect_uri_and_names_it_to_register(isolated):
+    """The port a caller picks is a fact about their Spotify registration, so it
+    is written the same way, to the same file, at the same mode as the client
+    ID -- and the prose then names the string they must go and register."""
+    from music_deck.check import check, config_path
+
+    document = setup(port=9000)
+
+    assert document["wrote"]["redirect_uri"] == "http://127.0.0.1:9000"
+    assert document["wrote"]["mode"] == "0600"
+    stored = json.loads(config_path().read_text(encoding="utf-8"))
+    assert stored["redirect_uri"] == "http://127.0.0.1:9000"
+    assert stat.S_IMODE(config_path().stat().st_mode) == 0o600
+
+    # One value: what was written is what `check` now reports.
+    fact = check()["redirect_uri"]
+    assert (fact["value"], fact["port"], fact["conforms"]) == (
+        "http://127.0.0.1:9000",
+        9000,
+        True,
+    )
+
+    prose = render(document)
+    assert "http://127.0.0.1:9000" in prose
+    assert not re.search(r"http://127\.0\.0\.1(?![:\d])", prose), prose
+
+
+def test_setup_port_keeps_the_client_id_already_in_the_file(isolated):
+    """Writing one key never drops the other -- they share one config file."""
+    setup(client_id=GOOD_ID)
+    setup(port=9100)
+
+    from music_deck.check import config_path
+
+    stored = json.loads(config_path().read_text(encoding="utf-8"))
+    assert stored == {"client_id": GOOD_ID, "redirect_uri": "http://127.0.0.1:9100"}
+
+
+def test_setup_writes_both_in_one_run(isolated):
+    document = setup(client_id=GOOD_ID, port=9200)
+
+    assert document["wrote"]["client_id"] == GOOD_ID
+    assert document["wrote"]["redirect_uri"] == "http://127.0.0.1:9200"
+    prose = render(document)
+    assert "client ID and redirect URI written" in prose
+
+
+@pytest.mark.parametrize("bad", ["0", "70000", "-1", "eight thousand", ""])
+def test_an_unusable_port_is_invalid_input_and_names_the_shape(isolated, bad):
+    """cli.v1 Core 5: invalid input exits 2. Caught here, not inside a browser
+    round trip where the reader cannot see what went wrong."""
+    with pytest.raises(MusicDeckError) as caught:
+        setup(port=bad)
+
+    assert caught.value.code == ErrorCode.USAGE
+    assert caught.value.exit_code == EXIT_REFUSAL
+    assert "1 and 65535" in caught.value.remedy
+
+
+def test_setup_with_nothing_configured_names_the_default_registered_uri(isolated):
+    """The acceptance criterion's first case, from the library side."""
+    document = setup()
+
+    assert document["redirect_uri"]["value"] == "http://127.0.0.1:8888"
+    assert document["redirect_uri"]["source"] == "built-in default"
+    prose = render(document)
+    assert "http://127.0.0.1:8888" in prose
+
+
+def test_the_port_round_trip_through_the_real_binary(tmp_path):
+    """setup --port writes it; check reports it; both are the installed binary."""
+    scratch = tmp_path / "elsewhere"
+    scratch.mkdir()
+    environment = {
+        "MUSIC_DECK_CONFIG_DIR": str(tmp_path / "config"),
+        "MUSIC_DECK_STATE_DIR": str(tmp_path / "state"),
+    }
+
+    written = run_cli("setup", "--port", "9000", cwd=scratch, timeout=10.0, **environment)
+    reported = run_cli("check", cwd=scratch, timeout=10.0, **environment)
+
+    assert written.returncode == EXIT_SUCCESS
+    assert "http://127.0.0.1:9000" in written.stdout
+    fact = json.loads(reported.stdout)["redirect_uri"]
+    assert fact["value"] == "http://127.0.0.1:9000"
+    assert fact["port"] == 9000
+    assert fact["conforms"] is True
+    assert "config file" in fact["source"]
+
+
 def test_an_unwritable_config_directory_refuses_rather_than_crashing(
     isolated, tmp_path, monkeypatch
 ):
@@ -375,6 +468,10 @@ def _documents(monkeypatch) -> dict[str, dict]:
     with monkeypatch.context() as patch:
         patch.setenv("MUSIC_DECK_REDIRECT_URI", "http://localhost:8080")
         documents["bad-redirect"] = setup()
+    documents["configured-port"] = setup(port=9000)
+    with monkeypatch.context() as patch:
+        patch.setenv("MUSIC_DECK_REDIRECT_URI", "http://127.0.0.1:9500")
+        documents["port-written-but-env-wins"] = setup(port=9000)
     return documents
 
 
@@ -391,6 +488,8 @@ def test_the_prose_carries_every_fact_the_json_twin_carries(isolated, monkeypatc
     # this test pass by having nothing to check, so it is checked.
     assert "note" in shapes["configured-but-env-wins"]
     assert any(gap["what"] == "redirect_uri" for gap in shapes["bad-redirect"]["missing"])
+    assert shapes["configured-port"]["wrote"]["redirect_uri"] == "http://127.0.0.1:9000"
+    assert "note" in shapes["port-written-but-env-wins"]
 
     missed: list[str] = []
     for shape, document in shapes.items():
@@ -452,9 +551,15 @@ def test_the_prose_names_the_two_facts_that_cost_people_an_afternoon(tmp_path):
     prose = _normalise(result.stdout)
 
     assert result.returncode == EXIT_SUCCESS
-    assert "http://127.0.0.1" in prose
+    # boundary.v1 Core 4: the exact string to register, port and all. The
+    # dashboard refuses a portless registration, so prose that named one would
+    # send a reader to a form that will not accept what they were told to type.
+    assert "http://127.0.0.1:8888" in prose
     assert "never http://localhost" in prose
     assert "the client ID, not the client secret" in prose
+    # And nowhere does it name the loopback literal WITHOUT a port: every
+    # occurrence is followed by a colon (a real port, or the <n> placeholder).
+    assert not re.search(r"http://127\.0\.0\.1(?![:\d])", prose), prose
     # And the one command that closes the gap it just described.
     assert "music-deck setup --client-id <your client id>" in prose
 

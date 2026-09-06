@@ -30,6 +30,13 @@ still requires every failure to carry a code:
   whose lane has not landed yet refuses loudly rather than pretending to work.
   Every one of these disappears as its lane lands; none is part of the promised
   surface, and no caller should ever branch on it.
+* ``port_unavailable`` -- ``login``'s loopback port is already in use.
+  ``boundary.v1`` Core 4, as rewritten on 2026-09-06, requires ``login`` to bind
+  the **registered** port and its kit assert requires it to "refuse loudly,
+  naming the port ... never silently pick another", so this is a real refusal
+  and exits ``2``. It is deliberately **not** in ``FROZEN_CODES``: Core 6's
+  vocabulary is ten codes and this lane does not own that clause. Amending Core 6
+  to name it is a steward call, recorded for the manager rather than taken here.
 
 Both are marked in ``FROZEN_CODES`` by their absence: that frozenset is exactly
 Core 6's ten, and it is what a conformance fixture should enumerate.
@@ -99,6 +106,7 @@ class ErrorCode:
     # -- not frozen; see the module docstring ------------------------------- #
     USAGE: Final = "usage"
     NOT_IMPLEMENTED: Final = "not_implemented"
+    PORT_UNAVAILABLE: Final = "port_unavailable"
 
 
 FROZEN_CODES: Final[frozenset[str]] = frozenset(
@@ -153,6 +161,11 @@ REMEDIES: Final[dict[str, str]] = {
         "Fix the plan at the path named in `message`, then run `music-deck apply` again."
     ),
     ErrorCode.USAGE: "Run `music-deck --help` for the complete listing of verbs.",
+    ErrorCode.PORT_UNAVAILABLE: (
+        "Free the port named in `message`, or pick another with `music-deck setup "
+        "--port <n>` and register http://127.0.0.1:<n> as your Spotify app's "
+        "redirect URI. Run `music-deck check` to see which port music-deck will use."
+    ),
     ErrorCode.NOT_IMPLEMENTED: (
         "This verb is declared by the CLI contract but not built yet. Run "
         "`music-deck check` to confirm the install, and `music-deck --help` to see "
@@ -166,6 +179,7 @@ _EXIT_BY_CODE: Final[dict[str, int]] = {
     **{code: EXIT_REFUSAL for code in FROZEN_CODES},
     ErrorCode.USAGE: EXIT_REFUSAL,
     ErrorCode.NOT_IMPLEMENTED: EXIT_FAILURE,
+    ErrorCode.PORT_UNAVAILABLE: EXIT_REFUSAL,
 }
 
 

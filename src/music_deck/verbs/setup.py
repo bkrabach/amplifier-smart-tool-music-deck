@@ -63,8 +63,9 @@ from pathlib import Path
 from typing import Any, Final
 
 from music_deck import setup_guide
+from music_deck.check import DEFAULT_REDIRECT_PORT, LOOPBACK_HOST_LITERAL
 from music_deck.check import check as run_check
-from music_deck.check import config_path, state_dir, token_path
+from music_deck.check import config_path, resolve_redirect_uri, state_dir, token_path
 from music_deck.errors import ErrorCode, MusicDeckError
 
 CONFIG_DIR_MODE: Final = 0o700
@@ -146,11 +147,55 @@ def _read_existing_config(path: Path) -> dict[str, Any]:
     return document if isinstance(document, dict) else {}
 
 
+def normalize_port(value: Any) -> int:
+    """A TCP port, or a loud refusal naming what a port looks like.
+
+    ``boundary.v1`` Core 4 makes the redirect port a value the caller registers
+    with Spotify by hand, so an unusable one is caught here -- at the moment they
+    type it -- rather than at `login`, inside a browser round trip nobody can
+    read.
+    """
+    try:
+        port = int(str(value).strip())
+    except (TypeError, ValueError):
+        raise MusicDeckError(
+            ErrorCode.USAGE,
+            f"`music-deck setup --port` was given {value!r}, which is not a "
+            f"number.",
+            "Give a TCP port between 1 and 65535, for example: music-deck setup "
+            f"--port {DEFAULT_REDIRECT_PORT}",
+        ) from None
+    if not 1 <= port <= 65535:
+        raise MusicDeckError(
+            ErrorCode.USAGE,
+            f"`music-deck setup --port` was given {port}, which is not a TCP "
+            f"port (1-65535).",
+            "Give a TCP port between 1 and 65535, for example: music-deck setup "
+            f"--port {DEFAULT_REDIRECT_PORT}",
+        )
+    return port
+
+
 def write_client_id(client_id: str) -> dict[str, Any]:
-    """Write ``client_id`` into the config file. Returns what was written.
+    """Write ``client_id`` into the config file. Returns what was written."""
+    return write_config(client_id=client_id)
+
+
+def write_redirect_uri(redirect_uri: str) -> dict[str, Any]:
+    """Write ``redirect_uri`` into the config file. Returns what was written."""
+    return write_config(redirect_uri=redirect_uri)
+
+
+def write_config(
+    *, client_id: str | None = None, redirect_uri: str | None = None
+) -> dict[str, Any]:
+    """Write the given keys into the config file. Returns what was written.
 
     The directory is created ``0700`` and the file lands ``0600``, both enforced
-    after the fact with ``chmod`` so an inherited umask cannot loosen them.
+    after the fact with ``chmod`` so an inherited umask cannot loosen them. The
+    redirect URI is written the same way and to the same file as the client ID,
+    because ``boundary.v1`` Core 4 makes it the same kind of fact: something the
+    caller registered with Spotify and the tool must honour exactly.
     """
     path = config_path()
     directory = path.parent
@@ -167,9 +212,17 @@ def write_client_id(client_id: str) -> dict[str, Any]:
             "again.",
         ) from exc
 
+    values = {
+        key: value
+        for key, value in (("client_id", client_id), ("redirect_uri", redirect_uri))
+        if value is not None
+    }
     document = _read_existing_config(path)
-    previous = document.get("client_id")
-    document["client_id"] = client_id
+    replaced = any(
+        document.get(key) and document.get(key) != value
+        for key, value in values.items()
+    )
+    document.update(values)
 
     try:
         handle = tempfile.NamedTemporaryFile(
@@ -202,8 +255,8 @@ def write_client_id(client_id: str) -> dict[str, Any]:
     return {
         "path": str(path),
         "mode": format(stat.S_IMODE(path.stat().st_mode), "04o"),
-        "client_id": client_id,
-        "replaced_previous": bool(previous) and previous != client_id,
+        **values,
+        "replaced_previous": replaced,
     }
 
 
@@ -273,7 +326,11 @@ def _missing(facts: dict[str, Any]) -> list[dict[str, Any]]:
                     "by design: it runs against your own app, under your own "
                     "quota. Registering one takes about ten minutes."
                 ),
-                "steps": list(setup_guide.CLIENT_ID_STEPS),
+                "steps": list(
+                    setup_guide.client_id_steps(
+                        (facts.get("redirect_uri") or {}).get("value")
+                    )
+                ),
                 "remedy": "Then tell music-deck the client ID you copied:",
                 "command": "music-deck setup --client-id <your client id>",
             }
@@ -286,11 +343,7 @@ def _missing(facts: dict[str, Any]) -> list[dict[str, Any]]:
                 "what": "redirect_uri",
                 "detail": f"Redirect URI {redirect.get('value')!r}: "
                 f"{redirect.get('detail')}",
-                "remedy": (
-                    "Register http://127.0.0.1 (no port) as the app's redirect "
-                    "URI, and unset MUSIC_DECK_REDIRECT_URI unless it names a "
-                    "loopback IP literal."
-                ),
+                "remedy": redirect.get("remedy") or "",
             }
         )
 
@@ -355,17 +408,40 @@ def _next_command(facts: dict[str, Any]) -> str:
 # --------------------------------------------------------------------------- #
 # The verb -- the document
 # --------------------------------------------------------------------------- #
+def _redirect_uri_block(facts: dict[str, Any]) -> dict[str, Any]:
+    """The one string a caller has to type into Spotify's dashboard.
+
+    ``boundary.v1`` Core 4 makes the redirect URI one value that ``check``
+    reports and ``login`` binds; the third reader is the caller, who registers it
+    by hand. So `setup` names it, character for character, taken from the same
+    resolver -- not from a sentence somebody wrote down once.
+    """
+    fact = facts.get("redirect_uri") or {}
+    return {
+        "value": fact.get("value") or "",
+        "source": fact.get("source") or "built-in default",
+        "detail": (
+            "Register this exact string as your Spotify app's redirect URI -- "
+            "with its port, and never http://localhost. music-deck binds exactly "
+            "this when you sign in, and `music-deck check` reports it. To use a "
+            "different port, run `music-deck setup --port <n>` and register that "
+            "one instead."
+        ),
+    }
+
+
 def setup(
     client_id: str | None = None,
+    port: int | str | None = None,
     show: bool = False,
     guide: bool = False,
 ) -> dict[str, Any]:
     """Report, configure, locate, or orient -- and never a prompt.
 
-    ``client_id`` writes the config file; ``show`` reports the paths; ``guide``
-    returns the whole registration orientation; the bare call reports the state
-    and the gaps. Exit is always 0 except for an invalid ``client_id``, which is
-    invalid input (exit 2).
+    ``client_id`` and ``port`` write the config file; ``show`` reports the paths;
+    ``guide`` returns the whole registration orientation; the bare call reports
+    the state and the gaps. Exit is always 0 except for an invalid ``client_id``
+    or ``port``, which are invalid input (exit 2).
 
     This is the document. :func:`render` is the prose a person reads, built from
     exactly this and nothing else.
@@ -381,31 +457,54 @@ def setup(
         }
 
     written: dict[str, Any] | None = None
+    values: dict[str, Any] = {}
     if client_id is not None:
-        written = write_client_id(normalize_client_id(client_id))
+        values["client_id"] = normalize_client_id(client_id)
+    if port is not None:
+        values["redirect_uri"] = (
+            f"http://{LOOPBACK_HOST_LITERAL}:{normalize_port(port)}"
+        )
+    if values:
+        written = write_config(**values)
 
     facts = run_check()
     gaps = _missing(facts)
+    ready = bool((facts.get("ready") or {}).get("spotify_verbs"))
 
     document: dict[str, Any] = {
         "tool": "music-deck",
         "version": facts.get("version", "unknown"),
         "action": "configured" if written is not None else "report",
-        "ready": bool((facts.get("ready") or {}).get("spotify_verbs")),
+        "ready": ready,
         "have": _have(facts),
         "missing": gaps,
         "next_command": _next_command(facts),
         "orientation": dict(ORIENTATION),
     }
+    # Proportional (Core 8): a caller who is already signed in has registered it
+    # and needs no reminder. Anyone still on their way to `login` -- or who just
+    # changed the port -- is about to type it into a dashboard.
+    if not ready or written is not None:
+        document["redirect_uri"] = _redirect_uri_block(facts)
     if written is not None:
         document["wrote"] = written
-        source = (facts.get("client_id") or {}).get("source") or ""
-        if source.startswith("environment"):
-            document["note"] = (
+        notes: list[str] = []
+        client_source = (facts.get("client_id") or {}).get("source") or ""
+        if "client_id" in written and client_source.startswith("environment"):
+            notes.append(
                 "MUSIC_DECK_CLIENT_ID is set in this environment and wins over "
                 "the config file, so `check` reports the environment's value, "
                 "not the one just written."
             )
+        redirect_source = (facts.get("redirect_uri") or {}).get("source") or ""
+        if "redirect_uri" in written and redirect_source.startswith("environment"):
+            notes.append(
+                "MUSIC_DECK_REDIRECT_URI is set in this environment and wins "
+                "over the config file, so `check` reports -- and `login` binds "
+                "-- the environment's value, not the one just written."
+            )
+        if notes:
+            document["note"] = " ".join(notes)
     return document
 
 
@@ -498,12 +597,22 @@ def _render_report(document: dict[str, Any]) -> str:
     wrote = document.get("wrote")
 
     if wrote is not None:
-        lines.append(f"{_title(document)} -- client ID written.")
+        names = [
+            label
+            for key, label in (
+                ("client_id", "client ID"),
+                ("redirect_uri", "redirect URI"),
+            )
+            if key in wrote
+        ]
+        lines.append(f"{_title(document)} -- {' and '.join(names)} written.")
         lines.append("")
-        lines.append(f"  {wrote['client_id']}")
+        for key in ("client_id", "redirect_uri"):
+            if key in wrote:
+                lines.append(f"  {wrote[key]}")
         lines.append(f"  {wrote['path']}  (mode {wrote['mode']}, yours alone)")
         if wrote.get("replaced_previous"):
-            lines.append("  It replaced the client ID that was there before.")
+            lines.append("  It replaced the value that was there before.")
         lines.append("")
     else:
         ready = "ready." if document.get("ready") else "not ready yet."
@@ -512,6 +621,15 @@ def _render_report(document: dict[str, Any]) -> str:
     note = document.get("note")
     if note:
         lines += _wrap(note) + [""]
+
+    redirect = document.get("redirect_uri")
+    if redirect:
+        lines.append(f"Redirect URI (from {redirect['source']}):")
+        lines.append("")
+        lines.append(f"  {redirect['value']}")
+        lines.append("")
+        lines += _wrap(redirect["detail"], indent="  ", first="  ")
+        lines.append("")
 
     have = document.get("have") or []
     if have:
@@ -562,5 +680,9 @@ def render(document: dict[str, Any]) -> str:
     if action == "paths":
         return _render_paths(document)
     if action == "guide":
-        return setup_guide.render()
+        # The URI comes out of the document, not out of the resolver a second
+        # time. Re-resolving here would let the prose and its `--json` twin
+        # disagree whenever the configured value changed between the two calls --
+        # the very drift this split exists to prevent.
+        return setup_guide.render((document.get("spotify_app") or {}).get("redirect_uri"))
     return _render_report(document)

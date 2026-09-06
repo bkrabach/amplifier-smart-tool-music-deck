@@ -8,7 +8,9 @@ cached byte of Spotify content, and reports what it deleted."
 What "interactive" means here, exactly
 --------------------------------------
 ``login`` opens a browser and waits a **bounded** time for Spotify to redirect
-back to a loopback port it bound itself. It never reads stdin -- nothing in
+back to the loopback port the caller registered -- the one
+``music_deck.check.resolve_redirect_uri`` returns and ``check`` reports, never
+one chosen at runtime (``boundary.v1`` Core 4). It never reads stdin -- nothing in
 music-deck ever does -- so ``cli.v1`` Core 1's "a run with stdin closed never
 hangs" survives even for this verb. The one case that cannot be served is *no
 browser opened and no terminal to paste a URL into*: that fails loud and
@@ -41,7 +43,7 @@ from music_deck.auth import (
     token_file_mode,
     write_token,
 )
-from music_deck.check import state_dir, token_path
+from music_deck.check import resolve_redirect_uri, state_dir, token_path
 from music_deck.errors import ErrorCode, MusicDeckError
 from music_deck.http import SpotifyClient, Transport
 
@@ -135,10 +137,16 @@ def login(
     pkce = new_pkce_pair()
     state = secrets.token_urlsafe(16)
 
+    resolved_uri, uri_source = resolve_redirect_uri()
+
     owned = receiver is None
-    listener = receiver or LoopbackReceiver()
+    listener = receiver or LoopbackReceiver(resolved_uri)
     try:
-        redirect_uri = listener.redirect_uri  # http://127.0.0.1:<ephemeral port>
+        # `boundary.v1` Core 4: one value, two readers. The receiver was built
+        # from what `resolve_redirect_uri` returned -- the same call `check`
+        # makes -- and bound that exact port or refused naming it, so this is
+        # the value `check` reports, not a port the kernel happened to hand out.
+        redirect_uri = listener.redirect_uri
         url = authorize_url(resolved_id, redirect_uri, pkce.challenge, state, scopes)
 
         opened = open_browser(url)
@@ -199,6 +207,7 @@ def login(
         "token_path": str(written),
         "token_mode": format(token_file_mode(token_file) or 0, "04o"),
         "redirect_uri": redirect_uri,
+        "redirect_uri_source": uri_source,
         "expires_at": document.get("expires_at"),
         "authorized_at": document.get("authorized_at"),
         "refresh_wall_note": (
