@@ -3,7 +3,12 @@ name = "music-deck"
 version = "0.1.0"
 description = "A smart tool for curating and controlling music on Spotify from any agent: a brief becomes a readable plan, and the plan is applied deterministically. Deterministic verbs run with no provider, no credentials, and (for `check`) no network."
 readme = "README.md"
-requires-python = ">=3.11"
+# >= 3.12 because the amplifier-agent engine library `plan` runs on requires it,
+# and a floor that admits a caller the tool cannot serve is not a floor. Every
+# other verb would run on 3.11; naming 3.11 anyway would let `uv sync` succeed on
+# a host where `plan` can never be installed at all -- cli.v1 Core 3's refusal is
+# meant for a missing credential, not for an interpreter nobody can change.
+requires-python = ">=3.12"
 license = { text = "MIT" }
 
 # Base dependencies carry NO provider SDK. cli.v1 Core 2: "Deterministic verbs
