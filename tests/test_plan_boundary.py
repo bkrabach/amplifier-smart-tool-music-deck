@@ -289,7 +289,8 @@ def test_the_plan_path_pulls_in_no_http_client(tmp_path):
         "from music_deck.testing import Recording;"
         "plan('a brief', intelligence=Recording());"
         "print(json.dumps([m for m in sys.modules if m.split('.')[0] in "
-        "{'httpx','requests','urllib3','aiohttp','amplifier_agent_lib','anthropic','openai'}]))"
+        "{'httpx','requests','urllib3','aiohttp','amplifier_agent','amplifier_agent_lib',"
+        "'anthropic','openai'}]))"
     )
     result = subprocess.run(
         [sys.executable, "-c", probe],

@@ -8,13 +8,16 @@ these three members and passing it in. Nothing else changes.
 
 Three properties this module is responsible for, each of them load-bearing:
 
-**Nothing is imported until a turn actually runs.** Importing
-``amplifier_agent_lib`` rewrites ``os.environ["AMPLIFIER_HOME"]``, and
-``cli.v1`` Core 2 promises the other forty verbs run "with no provider
-configured and no provider SDK installed". So every engine and provider import
-in this file sits inside a function body, and ``preflight`` establishes what is
-installed with ``importlib.util.find_spec``, which answers without importing.
-``import music_deck`` therefore pulls in no provider stack at all.
+**Nothing is imported until a turn actually runs.** ``cli.v1`` Core 2 promises
+the other forty verbs run "with no provider configured and no provider SDK
+installed", so every engine and provider import in this file sits inside a
+function body, and ``preflight`` establishes what is installed with
+``importlib.util.find_spec``, which answers without importing. ``import
+music_deck`` therefore pulls in no part of the model stack at all. (Measured on
+2026-09-06: ``import amplifier_agent`` adds 50 modules in ~30 ms and mutates no
+environment variable. Cheap is not free, and a deterministic verb should pay
+neither -- the promise is about what a caller is charged for, not about how
+large the charge happens to be this week.)
 
 **A refusal happens before any prompt is built.** ``preflight`` is a separate
 method from ``run`` for exactly that reason: ``plan`` calls it first, and a
@@ -23,13 +26,23 @@ missing precondition -- rather than an authentication error thrown from deep
 inside a provider module after a prompt was assembled, or worse, a quiet
 fallback to a deterministic answer.
 
-**A turn is text in, text out.** The shipped implementation strips the vendored
-bundle's tools, sub-agents and hooks before booting the engine and declines
-approval for anything that somehow asks. That makes "the model cannot read,
-write, or fetch anything" a property of the engine rather than a promise in a
-prompt -- which matters here more than in most tools, because
-``boundary.v1`` Core 2 forbids Spotify content reaching a model at all. A model
-that could call a tool could fetch what this contract forbids handing it.
+**A turn is text in, text out -- by construction, not by housekeeping.** The
+shipped implementation builds an agent with no tools, no skills, no MCP servers
+and **no approvals channel**. The library's own rule (its
+``docs/concepts/approvals.md``: "approvals absent -> there is no channel") is
+that a consequential action then fails ``approval_unavailable`` rather than
+proceeding; nothing is ever inferred to be allowed. So "the model cannot read,
+write, or fetch anything" is the library's documented default rather than a
+list of things music-deck remembered to switch off -- which matters here more
+than in most tools, because ``boundary.v1`` Core 2 forbids Spotify content
+reaching a model at all, and a model holding a fetch tool could pull in exactly
+what that clause forbids handing it.
+
+An explicit ``approvals="deny"`` was considered as a second line of defence and
+deliberately not used: it is not equivalent (it ends a turn at its first tool
+request with ``approval_denied`` rather than ``approval_unavailable``), so it
+would change observable behaviour while adding no safety the absent channel does
+not already give. Fewer moving parts, one documented guarantee.
 """
 
 from __future__ import annotations
@@ -92,9 +105,31 @@ extra above is the right answer for a ``pip``/``uv sync`` install; a uv **tool**
 install has no extras to add after the fact, so the package is named directly
 in ``uv tool install --force --with <package>``."""
 
-ENGINE_PACKAGE: Final = "amplifier_agent_lib"
+PROVIDER_DEFAULT_MODEL: Final[dict[str, str]] = {
+    "anthropic": "claude-sonnet-5",
+    "openai": "gpt-5.6-luna",
+    "gemini": "gemini-2.5-flash",
+}
+"""The model music-deck asks for when the caller pins none.
+
+The engine library needs a provider **and** a model: its own defaults are
+``anthropic``/``claude-sonnet-5`` together, so naming a provider without a model
+resolves an Anthropic model that a non-Anthropic account cannot serve. Each id
+here was run live against its provider on 2026-09-06 and answered.
+
+``azure-openai`` is deliberately absent: an Azure selection is a *deployment*
+name the account owner chose, so there is no value music-deck could guess that
+would be right for anybody. That caller sets ``MUSIC_DECK_MODEL``, and
+:meth:`AmplifierIntelligence.model_for` says so rather than sending a guess.
+
+These ids date. When one does, the turn fails loudly with the library's
+``selector_rejected`` and the remedy names ``MUSIC_DECK_MODEL`` -- a caller can
+fix it themselves, without waiting for this table to be updated."""
+
+ENGINE_PACKAGE: Final = "amplifier_agent"
 ENGINE_REQUIREMENT: Final = (
-    "amplifier-agent @ git+https://github.com/microsoft/amplifier-agent@main"
+    "amplifier-agent @ git+https://github.com/microsoft/amplifier-agent@v1"
+    "#subdirectory=packages/python"
 )
 ENGINE_INSTALL_HINT: Final = install_with(f'"{ENGINE_REQUIREMENT}"')
 """How to install the engine, in the form the documented install method takes.
@@ -106,16 +141,22 @@ saying ``uv pip install`` is unusable by exactly the reader who needs it. The
 ``uv tool install --force --with`` form adds a package to that environment,
 which is why every install remedy here is built from ``setup_guide.install_with``.
 
-The engine is deliberately *not* a music-deck extra: it is not on PyPI, and it
-requires Python >= 3.12 where music-deck supports >= 3.11 -- declaring it would
-make `uv sync` unsatisfiable for a 3.11 caller who only ever wanted the
-deterministic verbs."""
+The requirement pins the ``v1`` branch and the ``packages/python`` subdirectory:
+the repository root is not a Python distribution, so the plain git URL does not
+resolve. This exact spelling was installed from scratch on 2026-09-06 before it
+was written down here.
+
+The engine is deliberately *not* a music-deck extra. It is not on PyPI, so
+declaring it would put a git URL in this package's own metadata and make every
+``uv sync`` -- including the forty deterministic verbs' -- fetch a moving branch
+over the network before it could resolve. ``cli.v1`` Core 2 promises those verbs
+need no part of the model stack; an unconditional dependency on a git ref is
+exactly the quiet cost that promise exists to prevent."""
 
 ENGINE_INSTALL_HINT_PIP: Final = f'uv pip install "{ENGINE_REQUIREMENT}"'
 """The same thing for a copy installed into a virtualenv with pip rather than as
 a uv tool. Offered second: the tool install is the documented method."""
 
-WORKSPACE: Final = "music-deck"
 
 
 # --------------------------------------------------------------------------- #
@@ -337,12 +378,39 @@ class AmplifierIntelligence:
                 MISSING_ENGINE,
                 f"The amplifier-agent engine library ({ENGINE_PACKAGE}) is not "
                 f"installed, so there is nothing to run the turn.",
-                f"Add it to music-deck's own environment: {ENGINE_INSTALL_HINT} "
-                f"(it needs Python >= 3.12). In a virtualenv install instead: "
-                f"{ENGINE_INSTALL_HINT_PIP}.",
+                f"Add it to music-deck's own environment: {ENGINE_INSTALL_HINT}. "
+                f"In a virtualenv install instead: {ENGINE_INSTALL_HINT_PIP}.",
             )
 
         return chosen
+
+    def model_for(self, provider: str, requested: str | None = None) -> str:
+        """The model id this turn will ask for, or a refusal naming how to set one.
+
+        Three sources, in the order a caller expects: the argument, the
+        ``MUSIC_DECK_MODEL`` environment variable, then
+        :data:`PROVIDER_DEFAULT_MODEL`. When none of them answers -- today only
+        ``azure-openai``, whose selection is a deployment name its owner chose --
+        this refuses rather than letting the engine's own default resolve an
+        Anthropic model against somebody else's account, which fails several
+        layers down as an opaque provider error.
+        """
+        pinned = (requested or os.environ.get(MODEL_ENV_VAR) or "").strip() or None
+        if pinned is not None:
+            return pinned
+
+        default = PROVIDER_DEFAULT_MODEL.get(provider)
+        if default is not None:
+            return default
+
+        raise MusicDeckError(
+            "model_not_selected",
+            f"Model provider {provider!r} has no model music-deck can pick for "
+            f"you: an Azure OpenAI selection is the deployment name you chose "
+            f"when you created it, so only you know it.",
+            f"Set {MODEL_ENV_VAR} to that deployment's model id and run again.",
+            provider=provider,
+        )
 
     def run(self, request: ModelRequest) -> ModelResult:
         """Run one turn. Call from synchronous code; each call owns its loop."""
@@ -351,105 +419,162 @@ class AmplifierIntelligence:
         return asyncio.run(self.run_async(request))
 
     async def run_async(self, request: ModelRequest) -> ModelResult:
-        import sys
-        import uuid
+        """One turn through the engine library's documented public API.
+
+        Everything the boundary depends on is visible in the ``AgentOptions``
+        below: no ``tools``, no ``skills``, no ``mcp_servers``, and no
+        ``approvals``. Those are the library's defaults, and its approvals rule
+        makes them fail-closed -- with no channel, a consequential action fails
+        ``approval_unavailable`` instead of proceeding. music-deck strips
+        nothing and overrides nothing to get that; it simply asks for an agent
+        that has nothing to reach with.
+        """
+        import tempfile
 
         provider = self.preflight(request.provider)
-        model = request.model or os.environ.get(MODEL_ENV_VAR) or None
+        model = self.model_for(provider, request.model)
 
-        # Every engine import lives here, not at module level: importing
-        # amplifier_agent_lib rewrites os.environ["AMPLIFIER_HOME"], and forty
-        # deterministic verbs must never pay for that.
-        from amplifier_agent_cli.provider_sources import inject_provider, inject_routing_matrix
-        from amplifier_agent_lib import __version__
-        from amplifier_agent_lib._runtime import make_turn_handler
-        from amplifier_agent_lib.bundle.cache import load_and_prepare_cached
-        from amplifier_agent_lib.engine import Engine
-        from amplifier_agent_lib.protocol import PROTOCOL_VERSION, server_default_capabilities
-        from amplifier_agent_lib.protocol_points.defaults_cli import (
-            ApprovalOverride,
-            CliApprovalSystem,
-            CliDisplaySystem,
+        # The engine import lives here, not at module level: cli.v1 Core 2
+        # promises the forty deterministic verbs pay for no part of the model
+        # stack, and `tests/test_plan_refusal.py` holds that promise to a
+        # subprocess that imports music_deck and lists what came with it.
+        from amplifier_agent import (
+            AgentError,
+            AgentOptions,
+            SessionOptions,
+            TextPart,
+            TurnInput,
+            create_agent,
         )
 
-        prepared = await load_and_prepare_cached(aaa_version=__version__)
+        # boundary.v1 Core 8 forbids a persistent store, and the library writes
+        # durable transcripts under a storage root it picks (`~/.amplifier-agent`
+        # by default). An ephemeral session writes nothing there -- measured --
+        # but "nothing was written to a directory that does not outlive the
+        # turn" is a stronger sentence than "nothing was written", and it is the
+        # one a reviewer can check without trusting either of us.
+        with tempfile.TemporaryDirectory(prefix="music-deck-agent-") as storage:
+            options = AgentOptions(provider=provider, model=model, storage=storage)
+            try:
+                agent = await create_agent(options)
+            except AgentError as failure:
+                raise _engine_failure(failure, provider, model) from failure
 
-        # The vendored bundle declares provider stubs, and injection is a no-op
-        # while any provider is mounted; without this clear, the injection below
-        # is silently discarded.
-        prepared.mount_plan["providers"] = []
-        # Text in, text out. Unmounting the tools and sub-agents makes that a
-        # property of the engine rather than a promise in a prompt -- and here
-        # that is the difference between a contract and a hope, because a model
-        # holding a fetch tool could pull in exactly the Spotify content
-        # boundary.v1 Core 2 forbids putting in front of it. The hooks go too:
-        # each is a third-party module observing a session this tool has not
-        # got, whose failure to load would fail the turn.
-        prepared.mount_plan["tools"] = []
-        prepared.mount_plan["agents"] = {}
-        prepared.mount_plan["hooks"] = []
-        inject_provider(prepared, provider, model_override=model)
-        inject_routing_matrix(prepared, provider)
+            try:
+                async with agent:
+                    # Ephemeral, not durable: boundary.v1 Core 8 again. Durable is
+                    # this library's default, so this argument is not decoration --
+                    # omitting it would leave a resumable transcript on disk.
+                    session = await agent.create_session(
+                        SessionOptions(persistence="ephemeral")
+                    )
+                    async with session:
+                        result = await session.run(
+                            TurnInput(content=[TextPart(request.prompt)])
+                        )
+            except AgentError as failure:
+                raise _engine_failure(failure, provider, model) from failure
 
-        handler = make_turn_handler(
-            prepared, cwd=None, is_resumed=False, workspace=WORKSPACE
-        )
-        engine = Engine(
-            turn_handler=handler,
-            protocol_points={
-                # Nothing that could ask for approval is mounted. Declining
-                # anything that somehow does keeps the unmounting from being the
-                # only defence.
-                "approval": CliApprovalSystem(override=ApprovalOverride.NO),
-                # cli.v1 Core 4: diagnostics go to stderr, never to stdout --
-                # stdout carries one JSON document and nothing else.
-                "display": CliDisplaySystem(stream=sys.stderr, verbosity="quiet"),
-            },
-        )
-        await engine.boot(
-            {
-                "protocolVersion": PROTOCOL_VERSION,
-                "capabilities": dict(server_default_capabilities()),
-                "sessionId": "",
-                "resume": False,
-            },
-            bundle_override=prepared,
-        )
-        try:
-            result: dict[str, Any] = await engine.submit_turn(
-                {
-                    "sessionId": "",
-                    "turnId": f"turn-{uuid.uuid4().hex}",
-                    "prompt": request.prompt,
-                }
-            )
-        finally:
-            await engine.shutdown()
+        if result.error is not None or result.state != "success":
+            raise _turn_failure(result, provider, model)
 
-        tokens_in = int(result.get("tokensIn") or 0)
-        tokens_out = int(result.get("tokensOut") or 0)
-        reply = result.get("reply") or ""
-        if tokens_in == 0 and tokens_out == 0:
-            # The engine reports a mount failure as a reply rather than raising.
-            # Passing that on as an answer would present a tool that never ran
-            # as a model that answered badly.
+        reply = "".join(part.text for part in (result.content or []))
+        if not reply.strip():
+            # A turn that succeeded and said nothing is not an answer. Handing
+            # the empty string on would present a model that never spoke as one
+            # that answered badly, three layers down in the plan validator.
             raise MusicDeckError(
                 "model_did_not_run",
-                f"The agent engine returned without reaching a model: "
-                f"{reply or 'no reply'}",
-                "Check that the chosen provider's credential and client library "
-                "are both present, then run `music-deck check`.",
+                f"The agent engine reported a successful turn with no reply "
+                f"from {provider}.",
+                "Run `music-deck check` to confirm the provider is configured, "
+                "then run `music-deck plan` again.",
             )
 
-        cost = result.get("costUsd")
+        tokens_in, tokens_out, cost, actual_model = _read_usage(result.usage)
         return ModelResult(
             text=reply,
             provider=provider,
-            model=model,
+            model=actual_model or model,
             tokens_in=tokens_in,
             tokens_out=tokens_out,
-            cost_usd=cost if isinstance(cost, Decimal) or cost is None else Decimal(str(cost)),
+            cost_usd=cost,
         )
+
+
+# --------------------------------------------------------------------------- #
+# Reading what the engine gave back
+# --------------------------------------------------------------------------- #
+def _read_usage(usage: Any) -> tuple[int, int, Decimal | None, str | None]:
+    """Totals across every usage entry, plus the model the engine really used.
+
+    Every field here is optional in the library's records -- a provider that
+    reports no token counts is ordinary, not an error -- so absent means zero
+    for the counts and ``None`` for the cost, never a crash and never a
+    fabricated number. The model is taken from the first entry because that is
+    the provider's own answer to "what did you actually run?", which may be more
+    specific than what was asked for (``gpt-5`` came back as
+    ``gpt-5-2025-08-07``).
+    """
+    entries = list(getattr(usage, "entries", None) or ())
+    tokens_in = sum(int(getattr(entry, "tokens_in", 0) or 0) for entry in entries)
+    tokens_out = sum(int(getattr(entry, "tokens_out", 0) or 0) for entry in entries)
+
+    total: Decimal | None = None
+    for entry in entries:
+        for amount in (getattr(entry, "cost", None) or {}).values():
+            total = (total or Decimal(0)) + Decimal(str(amount))
+
+    actual = next((getattr(entry, "model", None) for entry in entries), None)
+    return tokens_in, tokens_out, total, actual
+
+
+def _engine_failure(failure: Any, provider: str, model: str) -> MusicDeckError:
+    """An ``AgentError`` from the library, in music-deck's envelope.
+
+    The library's own ``code`` and ``remedy`` are carried through rather than
+    replaced: ``cli.v1`` Core 4 wants a remedy its reader can act on, and the
+    layer that knows why an agent could not be built is the layer that failed to
+    build it. music-deck adds only what the library cannot know -- which
+    provider and model it was asked for, and where the caller sets them.
+    """
+    code = str(getattr(failure, "code", "") or "engine_failed")
+    message = str(getattr(failure, "message", "") or failure)
+    remedy = str(getattr(failure, "remedy", "") or "").strip()
+    return MusicDeckError(
+        code,
+        f"The agent engine refused to run a turn on {provider}/{model}: {message}",
+        (
+            f"{remedy} music-deck asked for provider {provider!r} and model "
+            f"{model!r}; pin either with {PROVIDER_ENV_VAR} and {MODEL_ENV_VAR}. "
+            f"Host settings named AMPLIFIER_AGENT_* are read by the engine "
+            f"itself and can refuse a turn before music-deck sees it."
+        ).strip(),
+        provider=provider,
+        model=model,
+    )
+
+
+def _turn_failure(result: Any, provider: str, model: str) -> MusicDeckError:
+    """A turn that reached a terminal state other than success.
+
+    ``state`` alone is not enough and neither is ``error`` alone: a rejected
+    turn carries a reason, and a failed selection was observed carrying *both*
+    an error and plausible-looking content. Refusing on either is what stops a
+    half-answer being composed into a plan.
+    """
+    failure = getattr(result, "error", None)
+    state = str(getattr(result, "state", "unknown"))
+    if failure is None:
+        return MusicDeckError(
+            "model_did_not_run",
+            f"The agent engine ended the turn {state!r} on {provider}/{model} "
+            f"without saying why.",
+            "Run `music-deck check`, then run `music-deck plan` again.",
+            provider=provider,
+            model=model,
+        )
+    return _engine_failure(failure, provider, model)
 
 
 def default_intelligence() -> Intelligence:
@@ -466,6 +591,7 @@ __all__ = [
     "AmplifierIntelligence",
     "ENGINE_INSTALL_HINT",
     "ENGINE_PACKAGE",
+    "ENGINE_REQUIREMENT",
     "Intelligence",
     "MISSING_CREDENTIALS",
     "MISSING_ENGINE",
@@ -477,6 +603,7 @@ __all__ = [
     "NoModelSubstrate",
     "PRECONDITIONS",
     "PROVIDER_CREDENTIAL_ENV",
+    "PROVIDER_DEFAULT_MODEL",
     "PROVIDER_ENV_VAR",
     "PROVIDER_EXTRA",
     "PROVIDER_ORDER",
