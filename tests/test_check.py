@@ -22,11 +22,14 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from music_deck.check import (
+    DEFAULT_REDIRECT_PORT,
     DEFAULT_REDIRECT_URI,
     REFRESH_TOKEN_WALL_DAYS,
-    _redirect_uri_shape,
     check,
     config_dir,
+    redirect_uri_parts,
+    redirect_uri_shape,
+    resolve_redirect_uri,
     state_dir,
 )
 
@@ -146,21 +149,29 @@ def test_the_client_id_value_is_never_echoed(isolated, monkeypatch):
 @pytest.mark.parametrize(
     "value, conforms",
     [
-        ("http://127.0.0.1", True),
+        ("http://127.0.0.1:8888", True),
         ("http://127.0.0.1:8080", True),
         ("http://[::1]:8080", True),
+        # No port: what Spotify's documentation describes and its dashboard
+        # refused on 2026-09-06. boundary.v1 Core 4 now requires the port.
+        ("http://127.0.0.1", False),
+        ("http://[::1]", False),
         ("http://localhost:8080", False),
         ("https://example.com/callback", False),
         ("http://192.168.0.4:8080", False),
+        ("http://127.0.0.1:not-a-port", False),
+        ("http://127.0.0.1:99999", False),
     ],
 )
 def test_redirect_uri_shape_follows_boundary_core_4(value, conforms):
-    """boundary.v1 Core 4: a loopback IP literal, never `localhost`."""
-    assert _redirect_uri_shape(value)[0] is conforms
+    """boundary.v1 Core 4: a loopback IP literal on a fixed, registered port."""
+    assert redirect_uri_shape(value)[0] is conforms
 
 
-def test_the_default_redirect_uri_conforms():
-    assert _redirect_uri_shape(DEFAULT_REDIRECT_URI)[0] is True
+def test_the_default_redirect_uri_conforms_and_carries_the_registered_port():
+    assert redirect_uri_shape(DEFAULT_REDIRECT_URI)[0] is True
+    assert DEFAULT_REDIRECT_URI == f"http://127.0.0.1:{DEFAULT_REDIRECT_PORT}"
+    assert redirect_uri_parts(DEFAULT_REDIRECT_URI) == ("127.0.0.1", 8888)
 
 
 def test_a_nonconforming_redirect_uri_becomes_a_finding(isolated, monkeypatch):
@@ -168,6 +179,50 @@ def test_a_nonconforming_redirect_uri_becomes_a_finding(isolated, monkeypatch):
     result = check()
     assert result["redirect_uri"]["conforms"] is False
     assert any("localhost" in finding for finding in result["findings"])
+
+
+def test_a_portless_loopback_uri_is_refused_and_the_remedy_names_what_to_register(
+    isolated, monkeypatch
+):
+    """The defect the steward caught: Spotify's dashboard refuses a portless
+    registration, so reporting one as conforming sends a caller to a form that
+    will not accept what they were told to type."""
+    monkeypatch.setenv("MUSIC_DECK_REDIRECT_URI", "http://127.0.0.1")
+    fact = check()["redirect_uri"]
+
+    assert fact["conforms"] is False
+    assert fact["port"] is None
+    assert "no usable port" in fact["detail"]
+    # Names what to register INSTEAD -- the same host, with a port.
+    assert "http://127.0.0.1:8888" in fact["remedy"]
+
+
+def test_check_reports_the_value_the_resolver_returns_from_every_source(
+    isolated, monkeypatch
+):
+    """boundary.v1 Core 4: one value. `check` never invents its own."""
+    config, _state = isolated
+
+    assert check()["redirect_uri"] == {
+        **check()["redirect_uri"],
+        "value": DEFAULT_REDIRECT_URI,
+        "source": "built-in default",
+        "port": DEFAULT_REDIRECT_PORT,
+        "conforms": True,
+    }
+
+    (config / "config.json").write_text(
+        json.dumps({"redirect_uri": "http://127.0.0.1:9100"}), encoding="utf-8"
+    )
+    fact = check()["redirect_uri"]
+    assert (fact["value"], fact["port"]) == ("http://127.0.0.1:9100", 9100)
+    assert "config file" in fact["source"]
+
+    monkeypatch.setenv("MUSIC_DECK_REDIRECT_URI", "http://127.0.0.1:9200")
+    fact = check()["redirect_uri"]
+    assert (fact["value"], fact["port"]) == ("http://127.0.0.1:9200", 9200)
+    assert fact["source"] == "environment MUSIC_DECK_REDIRECT_URI"
+    assert resolve_redirect_uri() == (fact["value"], fact["source"])
 
 
 def test_a_loose_token_file_mode_is_reported(isolated):

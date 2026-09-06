@@ -1,12 +1,12 @@
 """PKCE authorisation, the token cache, and `login` driven end to end.
 
 Contracts served: ``boundary.v1`` Core 4 (PKCE only, the caller's own client ID,
-a loopback IP-literal redirect with an ephemeral port, a token file at mode
+a loopback IP-literal redirect on the fixed registered port, a token file at mode
 ``0600``, no client secret anywhere) and Core 5 (``login`` is the only
 interactive verb; every other verb refuses ``not_authenticated`` and names
 ``music-deck login``).
 
-`login` is exercised for real: a loopback receiver is bound on a real ephemeral
+`login` is exercised for real: a loopback receiver is bound on the real resolved
 port, a stand-in browser performs the redirect Spotify would perform, and a
 stand-in transport answers the token exchange. What is *not* stood in for is the
 code under test -- the PKCE pair, the URL, the receiver, the exchange, the file
@@ -21,6 +21,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -41,7 +42,13 @@ from spotify_fakes import (
 )
 
 from music_deck import auth
-from music_deck.errors import EXIT_FAILURE, EXIT_REFUSAL, EXIT_SUCCESS, ErrorCode
+from music_deck.errors import (
+    EXIT_FAILURE,
+    EXIT_REFUSAL,
+    EXIT_SUCCESS,
+    ErrorCode,
+    MusicDeckError,
+)
 from music_deck.verbs.auth_verbs import login
 
 TOKEN_RESPONSE = {
@@ -97,22 +104,68 @@ def test_the_authorization_url_carries_the_challenge_and_never_the_verifier():
 # --------------------------------------------------------------------------- #
 # The redirect URI -- B section 1.3
 # --------------------------------------------------------------------------- #
-def test_the_redirect_uri_is_a_loopback_ip_literal_with_a_bound_port():
-    """"`localhost` is not allowed as redirect URI" -- Spotify, enforced since
-    2025-04-09. The port is whatever the kernel handed out, which is why the app
-    is registered without one."""
+def free_port() -> int:
+    """A port nothing is listening on right now.
+
+    Used to keep these tests off the registered default (8888), which a real
+    install -- or another test run on the same machine -- may legitimately be
+    holding. The value is resolved through the same env var a caller would use,
+    so what is exercised is the shipping resolver, not a test-only seam.
+    """
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
+def test_the_redirect_uri_is_a_loopback_ip_literal_on_the_registered_port(monkeypatch):
+    """boundary.v1 Core 4: a loopback IP literal on a fixed, registered port.
+
+    "`localhost` is not allowed as redirect URI" -- Spotify, enforced since
+    2025-04-09. The port is no longer whatever the kernel handed out: it is the
+    one the caller registered, which is why `check` can report it truthfully.
+    """
+    port = free_port()
+    monkeypatch.setenv("MUSIC_DECK_REDIRECT_URI", f"http://127.0.0.1:{port}")
+
     with auth.LoopbackReceiver() as receiver:
         uri = receiver.redirect_uri
+        bound = receiver._server.server_address[1]
 
-    assert uri.startswith("http://127.0.0.1:")
+    assert uri == f"http://127.0.0.1:{port}"
     assert "localhost" not in uri
-    port = int(uri.rsplit(":", 1)[1])
-    assert 1024 < port < 65536
+    assert receiver.port == port
+    assert bound == port, "the socket bound the registered port, not another"
 
 
-def test_two_receivers_do_not_fight_over_a_port():
-    with auth.LoopbackReceiver() as first, auth.LoopbackReceiver() as second:
-        assert first.port != second.port
+def test_a_second_receiver_on_the_same_port_refuses_loudly_naming_it(monkeypatch):
+    """boundary.v1 kit assert: "`login` refuses loudly, naming the port, when
+    that port is already in use -- it never silently picks another"."""
+    port = free_port()
+    monkeypatch.setenv("MUSIC_DECK_REDIRECT_URI", f"http://127.0.0.1:{port}")
+
+    with auth.LoopbackReceiver() as first:
+        with pytest.raises(MusicDeckError) as raised:
+            auth.LoopbackReceiver()
+
+    assert raised.value.code == "port_unavailable"
+    assert raised.value.exit_code == EXIT_REFUSAL
+    assert str(port) in raised.value.message
+    assert raised.value.extra["port"] == port
+    assert "music-deck setup --port" in raised.value.remedy
+    assert first.port == port
+
+
+def test_a_redirect_uri_that_cannot_be_bound_is_refused_before_any_socket(monkeypatch):
+    """A portless URI names no port to bind, so the refusal is about the value,
+    not about the socket -- and it says what to register instead."""
+    monkeypatch.setenv("MUSIC_DECK_REDIRECT_URI", "http://127.0.0.1")
+
+    with pytest.raises(MusicDeckError) as raised:
+        auth.LoopbackReceiver()
+
+    assert raised.value.code == ErrorCode.USAGE
+    assert "no usable port" in raised.value.message
+    assert "http://127.0.0.1:8888" in raised.value.remedy
 
 
 # --------------------------------------------------------------------------- #
@@ -238,12 +291,19 @@ class BrowserStandIn:
 
 @pytest.fixture
 def xdg_state(monkeypatch, tmp_path):
-    """State under $XDG_STATE_HOME, the path boundary.v1 Core 4 names."""
+    """State under $XDG_STATE_HOME, the path boundary.v1 Core 4 names.
+
+    The redirect URI is pinned to a free port rather than left on the registered
+    default, so a machine legitimately using 8888 does not turn these tests red.
+    Pinning it through MUSIC_DECK_REDIRECT_URI exercises the shipping resolver --
+    the same one `check` reads -- rather than reaching past it.
+    """
     monkeypatch.delenv("MUSIC_DECK_STATE_DIR", raising=False)
     monkeypatch.delenv("MUSIC_DECK_CONFIG_DIR", raising=False)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
     monkeypatch.setenv("MUSIC_DECK_CLIENT_ID", "client-id-under-test")
+    monkeypatch.setenv("MUSIC_DECK_REDIRECT_URI", f"http://127.0.0.1:{free_port()}")
     return tmp_path / "xdg-state" / "music-deck" / "token.json"
 
 
@@ -266,8 +326,10 @@ def test_login_completes_and_leaves_a_0600_token_at_the_contracted_path(
     assert xdg_state.exists()
     assert stat.S_IMODE(xdg_state.stat().st_mode) == 0o600
     assert result["token_mode"] == "0600"
-    # boundary.v1 Core 4: the redirect URI actually used.
+    # boundary.v1 Core 4: the redirect URI actually used is the resolved one.
     assert re.fullmatch(r"http://127\.0\.0\.1:\d+", result["redirect_uri"])
+    assert result["redirect_uri"] == os.environ["MUSIC_DECK_REDIRECT_URI"]
+    assert result["redirect_uri_source"] == "environment MUSIC_DECK_REDIRECT_URI"
     assert "localhost" not in browser.urls[0]
     assert f"redirect_uri={urllib.parse.quote(result['redirect_uri'], safe='')}" in browser.urls[0]
 

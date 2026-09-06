@@ -16,8 +16,11 @@ model -- which is what makes it usable as the install smoke test.
 What it reports, in order:
 
 * the client ID -- present or not, and where it came from
-* the redirect URI -- its value, and whether its shape conforms to
-  ``boundary.v1`` Core 4 (loopback IP literal, never ``localhost``)
+* the redirect URI -- its value, where it came from, and whether its shape
+  conforms to ``boundary.v1`` Core 4 (loopback IP literal on a fixed, registered
+  port, never ``localhost``). :func:`resolve_redirect_uri` here is the **one**
+  place that value is decided, for this verb and for ``login`` alike -- Core 4's
+  "one value, two readers"
 * the token cache -- present or not, its path, and its file mode
 * the access token -- when it expires
 * the refresh token -- how old it is against Spotify's six-month wall
@@ -32,6 +35,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Final
@@ -48,11 +52,21 @@ refresh token's lifetime". Six months is taken here as 183 days."""
 TOKEN_FILE_MODE: Final = 0o600
 """``boundary.v1`` Core 4: the token file is mode 0600."""
 
-DEFAULT_REDIRECT_URI: Final = "http://127.0.0.1"
-"""Registered without a port. ``boundary.v1`` Core 4 puts an ephemeral port on
-the authorisation request, which Spotify supports only for loopback literals."""
+REDIRECT_URI_ENV: Final = "MUSIC_DECK_REDIRECT_URI"
+"""The override, and the whole escape hatch: whatever a caller's dashboard
+actually accepts, they can set here and both readers below will honour it."""
 
-_LOOPBACK_HOSTS: Final = ("127.0.0.1", "[::1]")
+LOOPBACK_HOST_LITERAL: Final = "127.0.0.1"
+"""The IP literal, never the name ``localhost`` -- Spotify rejects the name."""
+
+DEFAULT_REDIRECT_PORT: Final = 8888
+DEFAULT_REDIRECT_URI: Final = f"http://{LOOPBACK_HOST_LITERAL}:{DEFAULT_REDIRECT_PORT}"
+"""``boundary.v1`` Core 4 (rewritten 2026-09-06): a loopback IP literal on a
+**fixed, registered port**. Spotify's documentation still describes registering
+a loopback literal without a port; its dashboard refused exactly that on
+2026-09-06, and the dashboard is the reality a caller meets."""
+
+_LOOPBACK_HOSTS: Final = ("127.0.0.1", "::1")
 
 _PROVIDER_ENV_VARS: Final = (
     "MUSIC_DECK_PROVIDER",
@@ -188,44 +202,134 @@ def _client_id_fact(config: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
-def _redirect_uri_fact(config: dict[str, Any] | None) -> dict[str, Any]:
-    """``boundary.v1`` Core 4: a loopback IP literal, never ``localhost``."""
-    value = os.environ.get("MUSIC_DECK_REDIRECT_URI", "").strip()
-    source = "environment MUSIC_DECK_REDIRECT_URI"
-    if not value and config is not None:
-        candidate = config.get("redirect_uri")
+def resolve_redirect_uri() -> tuple[str, str]:
+    """``(redirect uri, where it came from)`` -- **the** one source of that value.
+
+    ``boundary.v1`` Core 4: "One value, reported by ``check`` and used by
+    ``login``: a redirect URI a caller can read but the tool does not honour is
+    worse than none." This function is that one value. ``check`` reports what it
+    returns; ``login`` (via :class:`music_deck.auth.LoopbackReceiver`) binds the
+    port it returns. Nothing else resolves a redirect URI anywhere.
+
+    Order: ``MUSIC_DECK_REDIRECT_URI``, then ``redirect_uri`` in the config file,
+    then the built-in default. Never raises -- an unreadable config is "not
+    configured", because ``check`` reports rather than fails.
+    """
+    value = os.environ.get(REDIRECT_URI_ENV, "").strip()
+    if value:
+        return value, f"environment {REDIRECT_URI_ENV}"
+    document, _problem = _read_json(config_path())
+    if document is not None:
+        candidate = document.get("redirect_uri")
         if isinstance(candidate, str) and candidate.strip():
-            value, source = candidate.strip(), f"config file {config_path()}"
-    if not value:
-        value, source = DEFAULT_REDIRECT_URI, "built-in default"
-
-    conforms, detail = _redirect_uri_shape(value)
-    return {"value": value, "source": source, "conforms": conforms, "detail": detail}
+            return candidate.strip(), f"config file {config_path()}"
+    return DEFAULT_REDIRECT_URI, "built-in default"
 
 
-def _redirect_uri_shape(value: str) -> tuple[bool, str]:
+def redirect_uri_parts(value: str) -> tuple[str, int | None]:
+    """``(host, port)`` for a redirect URI -- the pair ``login`` binds.
+
+    The host comes back bare (``::1``, not ``[::1]``), which is what a socket
+    wants. ``port`` is ``None`` when the URI carries none *or* carries one that
+    is not a number in 1-65535; :func:`redirect_uri_shape` is what turns either
+    of those into a readable refusal. Never raises.
+    """
+    try:
+        parsed = urllib.parse.urlsplit(value.strip())
+    except ValueError:
+        return "", None
+    try:
+        host = parsed.hostname or ""
+    except ValueError:
+        host = ""
+    try:
+        port = parsed.port
+    except ValueError:  # a port that is not a number, or out of range
+        port = None
+    return host, port
+
+
+def _redirect_uri_fact() -> dict[str, Any]:
+    """``boundary.v1`` Core 4: a loopback IP literal on a fixed, registered port.
+
+    Reads :func:`resolve_redirect_uri` and nothing else, so what ``check``
+    reports here is by construction the same value ``login`` binds.
+    """
+    value, source = resolve_redirect_uri()
+    conforms, detail = redirect_uri_shape(value)
+    _host, port = redirect_uri_parts(value)
+    fact: dict[str, Any] = {
+        "value": value,
+        "source": source,
+        "port": port,
+        "conforms": conforms,
+        "detail": detail,
+        "note": (
+            "This exact string is what `login` binds and what your Spotify app "
+            "must have registered -- one value, two readers."
+        ),
+    }
+    if not conforms:
+        fact["remedy"] = redirect_uri_remedy(value)
+    return fact
+
+
+def redirect_uri_shape(value: str) -> tuple[bool, str]:
+    """Whether a redirect URI is the shape ``boundary.v1`` Core 4 requires.
+
+    Three things, in the order a caller gets them wrong: plain HTTP (permitted
+    only because the host is loopback), the IP literal rather than the name
+    ``localhost``, and -- since the clause was rewritten on 2026-09-06 -- a port.
+    """
     if not value.startswith("http://"):
         return False, (
             "must start with http:// -- Spotify permits plain HTTP only for a "
             "loopback address, and music-deck uses a loopback address."
         )
-    remainder = value[len("http://") :]
-    host = remainder.split("/", 1)[0]
-    if host.startswith("[") and "]" in host:
-        host_only = host[: host.index("]") + 1]
-    else:
-        host_only = host.split(":", 1)[0]
-    if host_only == "localhost":
+    host, port = redirect_uri_parts(value)
+    if host == "localhost":
         return False, (
             "`localhost` is not allowed by Spotify as a redirect URI. Use the IP "
-            "literal http://127.0.0.1 instead."
+            f"literal {DEFAULT_REDIRECT_URI} instead."
         )
-    if host_only not in _LOOPBACK_HOSTS:
+    if host not in _LOOPBACK_HOSTS:
         return False, (
-            f"host {host_only!r} is not a loopback IP literal. boundary.v1 Core 4 "
-            "requires http://127.0.0.1 (or http://[::1])."
+            f"host {host or value!r} is not a loopback IP literal. boundary.v1 "
+            f"Core 4 requires {DEFAULT_REDIRECT_URI} (or http://[::1]:"
+            f"{DEFAULT_REDIRECT_PORT})."
         )
-    return True, "loopback IP literal, as boundary.v1 Core 4 requires."
+    if port is None:
+        return False, (
+            "it names no usable port. boundary.v1 Core 4 requires a fixed, "
+            "registered port: Spotify's dashboard refuses a registration with no "
+            "port, whatever its documentation says, and `login` binds exactly the "
+            "port registered."
+        )
+    return True, (
+        f"loopback IP literal on the fixed port {port}, as boundary.v1 Core 4 "
+        "requires."
+    )
+
+
+def redirect_uri_remedy(value: str) -> str:
+    """What to register instead, for a redirect URI that does not conform."""
+    host, port = redirect_uri_parts(value)
+    suggestion = (
+        f"http://{host}:{DEFAULT_REDIRECT_PORT}"
+        if host in _LOOPBACK_HOSTS and port is None
+        else DEFAULT_REDIRECT_URI
+    )
+    return (
+        f"Register exactly {suggestion} as your Spotify app's redirect URI -- with "
+        f"the port, and never http://localhost -- then run `music-deck setup "
+        f"--port {DEFAULT_REDIRECT_PORT}` to store it, or unset "
+        f"{REDIRECT_URI_ENV} to fall back to {DEFAULT_REDIRECT_URI}."
+    )
+
+
+_redirect_uri_shape = redirect_uri_shape
+"""The name this had before the clause was rewritten. Kept so nothing that
+imported it breaks; new code uses :func:`redirect_uri_shape`."""
 
 
 def _token_file_fact() -> dict[str, Any]:
@@ -423,7 +527,7 @@ def _check() -> dict[str, Any]:
     token, token_problem = _read_json(token_path())
 
     client_id = _client_id_fact(config)
-    redirect_uri = _redirect_uri_fact(config)
+    redirect_uri = _redirect_uri_fact()
     token_file = _token_file_fact()
     if token_problem is not None:
         token_file["error"] = f"{token_path()} {token_problem}"
@@ -440,7 +544,10 @@ def _check() -> dict[str, Any]:
             "Run `music-deck setup` for the steps."
         )
     if not redirect_uri["conforms"]:
-        findings.append(f"Redirect URI {redirect_uri['value']!r}: {redirect_uri['detail']}")
+        findings.append(
+            f"Redirect URI {redirect_uri['value']!r}: {redirect_uri['detail']} "
+            f"{redirect_uri['remedy']}"
+        )
     if not token_file["present"]:
         findings.append("Not signed in to Spotify. Run `music-deck login`.")
     elif token_file.get("mode_ok") is False:
