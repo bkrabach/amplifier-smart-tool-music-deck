@@ -3,8 +3,13 @@
 ``cli.v1`` Core 1: "One binary, ``music-deck``, on PATH. Non-interactive. A run
 with stdin closed never hangs. ``-h`` gives a terse human summary; ``--help``
 gives a complete listing for an agent -- every verb, its arguments, types,
-return shape, and which verbs are model-backed. Help goes to stdout, exits 0,
-and is the only non-JSON output the binary ever prints to stdout."
+return shape, and which verbs are model-backed. Help goes to stdout and exits 0."
+
+``cli.v1`` Core 4: "Structure what a caller parses; write what a caller reads."
+So this module prints one of two things. A result a caller acts on is one JSON
+document; a result that is *guidance* -- `setup` -- is prose, with ``--json``
+for the same content structured. A handler says which by what it returns: a
+``dict`` is a document, a ``str`` is already written for its reader.
 
 Two rules shape this file.
 
@@ -51,6 +56,7 @@ from music_deck.verbs import catalog, library, player, playlists
 from music_deck.verbs.apply import apply_plan as run_apply
 from music_deck.verbs.apply import read_plan
 from music_deck.verbs.plan import plan as run_plan
+from music_deck.verbs.setup import render as render_setup
 from music_deck.verbs.setup import setup as run_setup
 from music_deck.verbs.auth_verbs import disconnect as run_disconnect
 from music_deck.verbs.auth_verbs import login as run_login
@@ -99,7 +105,7 @@ class Verb:
     args: tuple[Arg, ...] = ()
     subverbs: tuple["Verb", ...] = ()
     model_backed: bool = False
-    handler: Callable[[argparse.Namespace], dict[str, Any]] | None = None
+    handler: Callable[[argparse.Namespace], dict[str, Any] | str] | None = None
     detail: str = field(default="")
 
     @property
@@ -119,10 +125,23 @@ def _handle_check(_args: argparse.Namespace) -> dict[str, Any]:
     return run_check()
 
 
-def _handle_setup(args: argparse.Namespace) -> dict[str, Any]:
-    return run_setup(
-        client_id=getattr(args, "client_id", None), show=bool(getattr(args, "show", False))
+def _handle_setup(args: argparse.Namespace) -> dict[str, Any] | str:
+    """`setup` -- guidance, so prose by default and ``--json`` for its twin.
+
+    ``cli.v1`` Core 4: "A verb whose result is guidance writes it for its reader,
+    with ``--json`` for the same content structured." Both come from the same
+    call: the library builds one document, and ``music_deck.verbs.setup.render``
+    turns that document -- and nothing else -- into the prose, so the two shapes
+    cannot carry different facts.
+    """
+    document = run_setup(
+        client_id=getattr(args, "client_id", None),
+        show=bool(getattr(args, "show", False)),
+        guide=bool(getattr(args, "guide", False)),
     )
+    if getattr(args, "json", False):
+        return document
+    return render_setup(document)
 
 
 def _handle_manifest(_args: argparse.Namespace) -> dict[str, Any]:
@@ -367,11 +386,11 @@ def _handle_queue_add(args: argparse.Namespace) -> dict[str, Any]:
 VERBS: Final[tuple[Verb, ...]] = (
     Verb(
         "setup",
-        "Get from a fresh install to ready: what is configured, what is missing, "
-        "and how to register a Spotify app.",
+        "Get from a fresh install to ready: what is missing, and the steps that "
+        "close that gap.",
         (
-            "A JSON object: `configured`, `missing`, `next_command`, `paths`, and "
-            "`spotify_app` (the registration steps)."
+            "Prose, written to be read. `--json` returns the same content as one "
+            "JSON object: `ready`, `have`, `missing`, `next_command`."
         ),
         args=(
             Arg(
@@ -384,13 +403,26 @@ VERBS: Final[tuple[Verb, ...]] = (
                 "flag",
                 "Report only where the config, state, and token files live.",
             ),
+            Arg(
+                "--guide",
+                "flag",
+                "Print the whole Spotify-app orientation, not just the gap you have.",
+            ),
+            Arg(
+                "--json",
+                "flag",
+                "Emit the same content as one JSON document instead of prose.",
+            ),
         ),
         handler=_handle_setup,
         detail=(
             "Non-interactive, like every verb except `login`: it never prompts "
-            "and never reads stdin. Run it with no arguments to see what is "
-            "missing and how to register an app; run it with --client-id to "
-            "write the id (config dir 0700, config file 0600). Exit 0 always -- "
+            "and never reads stdin. Its result is guidance, so it writes prose "
+            "for a person and `--json` carries the same facts structured "
+            "(cli.v1 Core 4). Run it with no arguments to see the gap you "
+            "actually have and the steps that close it -- not the whole "
+            "orientation, which is --guide; run it with --client-id to write "
+            "the id (config dir 0700, config file 0600). Exit 0 always -- "
             "reporting what is missing is its success. An unusable --client-id "
             "is invalid input and refuses with exit 2, naming the shape."
         ),
@@ -1033,9 +1065,11 @@ def complete_help() -> str:
         f"usage: {PROG} <verb> [arguments]",
         "",
         "OUTPUT",
-        "  Every result is exactly one JSON document on stdout. Progress and",
-        "  diagnostics go to stderr. This help text is the only non-JSON output",
-        "  the binary ever prints to stdout.",
+        "  A result you parse is exactly one JSON document on stdout. `setup`",
+        "  is guidance rather than a parsed result, so it writes prose for a",
+        "  person; `setup --json` gives the same content structured. Progress",
+        "  and diagnostics go to stderr, and a failure is always the JSON error",
+        "  envelope below.",
         "",
         "EXIT CODES",
         f"  {EXIT_SUCCESS}  success",
@@ -1156,11 +1190,22 @@ def _help_request(argv: Sequence[str]) -> str | None:
 
 
 def _dispatch(args: argparse.Namespace) -> int:
+    """Run the resolved verb and print what it returned, in the shape it is in.
+
+    ``cli.v1`` Core 4 splits results two ways, so this does too: a document goes
+    out as JSON, and text a verb has already written for its reader goes out as
+    it is. The verb decides -- nothing here reformats guidance into JSON or JSON
+    into guidance.
+    """
     verb: Verb = getattr(args, "_resolved")
     path: str = getattr(args, "_path")
     if verb.handler is None:
         raise NotImplementedVerb(path)
-    emit_json(verb.handler(args))
+    result = verb.handler(args)
+    if isinstance(result, str):
+        print(result)
+    else:
+        emit_json(result)
     return EXIT_SUCCESS
 
 

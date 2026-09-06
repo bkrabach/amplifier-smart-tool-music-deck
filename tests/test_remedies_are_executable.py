@@ -191,9 +191,13 @@ def _walk_remedies(document: Any, path: str = "") -> Iterator[tuple[str, str]]:
     if isinstance(document, dict):
         for key, value in document.items():
             here = f"{path}.{key}" if path else key
-            if key in ("remedy", "detail", "install", "next_command") and isinstance(
-                value, str
-            ):
+            if key in (
+                "remedy",
+                "detail",
+                "install",
+                "next_command",
+                "command",
+            ) and isinstance(value, str):
                 yield here, value
             else:
                 yield from _walk_remedies(value, here)
@@ -243,7 +247,9 @@ def _runtime_strings(monkeypatch) -> list[tuple[str, str]]:
     """Provoke every refusal this package can raise, and take its remedy."""
     from music_deck import auth, intelligence
     from music_deck.check import check
-    from music_deck.verbs.setup import normalize_client_id, setup
+    from music_deck.verbs.setup import normalize_client_id
+    from music_deck.verbs.setup import render as render_setup
+    from music_deck.verbs.setup import setup
 
     collected: list[tuple[str, str]] = []
 
@@ -254,10 +260,26 @@ def _runtime_strings(monkeypatch) -> list[tuple[str, str]]:
     # 2. every remedy, finding and detail `check` can report
     collected += [(f"check().{key}", value) for key, value in _walk_remedies(check())]
 
-    # 3. every remedy `setup` can report, and the guide it carries
-    collected += [(f"setup().{key}", value) for key, value in _walk_remedies(setup())]
+    # 3. every remedy `setup` can report, in both of the shapes it reports in.
+    #    Since MD-8 the default shape is prose (cli.v1 Core 4), so the prose is
+    #    swept as one string too: a source-tree path that stopped being a
+    #    `remedy` field and became a sentence would otherwise walk straight
+    #    past the sweep that exists to catch it.
+    for label, document in (
+        ("setup()", setup()),
+        ("setup(guide=True)", setup(guide=True)),
+        ("setup(show=True)", setup(show=True)),
+    ):
+        collected += [
+            (f"{label}.{key}", value) for key, value in _walk_remedies(document)
+        ]
+        collected.append((f"render({label})", render_setup(document)))
     collected.append(("setup_guide.render()", setup_guide.render()))
     collected.append(("setup_guide.INSTALL_COMMAND", setup_guide.INSTALL_COMMAND))
+    collected += [
+        (f"setup_guide.CLIENT_ID_STEPS[{index}]", step)
+        for index, step in enumerate(setup_guide.CLIENT_ID_STEPS)
+    ]
 
     # 4. the manifest's `install` -- named by Core 4 alongside remedies
     for index, entry in enumerate(manifest().get("requires", [])):
@@ -385,7 +407,7 @@ def _static_strings() -> list[tuple[str, str]]:
                 for key, value in zip(node.keys, node.values):
                     if (
                         isinstance(key, ast.Constant)
-                        and key.value in ("remedy", "install")
+                        and key.value in ("remedy", "install", "command")
                         and (text := _literal(value))
                     ):
                         collected.append(
