@@ -9,7 +9,9 @@ can do by importing this module.
 What is reachable today:
 
 * ``manifest()`` -- the SMART_TOOL.md manifest as a dict (``cli.v1`` Core 7)
-* ``setup()`` -- nothing to ready, without prompting (``cli.v1`` Core 8), and
+* ``setup()`` -- nothing to ready, without prompting (``cli.v1`` Core 8), with
+  ``setup_render()`` for the prose form of that same document (``cli.v1``
+  Core 4: guidance is written for its reader, ``--json`` is the twin), and
   ``setup_guide`` -- the Spotify-app registration steps the package carries, so
   no remedy has to name a file only a checkout has (``cli.v1`` Core 4)
 * ``check()`` -- the deterministic smoke report (``boundary.v1`` Core 6)
@@ -48,6 +50,7 @@ from music_deck.manifest import ManifestError, manifest, manifest_body
 from music_deck.prompt_boundary import BoundaryReport, check_plan_transcript, check_prompts
 from music_deck import setup_guide
 from music_deck.verbs.plan import plan
+from music_deck.verbs.setup import render as setup_render
 from music_deck.verbs.setup import setup
 
 __version__ = "0.1.0"
@@ -60,6 +63,8 @@ __all__ = [
     "ManifestError",
     # nothing to ready, without prompting -- cli.v1 Core 8
     "setup",
+    # the same document as the prose a person reads -- cli.v1 Core 4, 7
+    "setup_render",
     "setup_guide",
     # the deterministic smoke verb -- boundary.v1 Core 6
     "check",
