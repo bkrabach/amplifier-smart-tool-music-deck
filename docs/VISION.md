@@ -46,8 +46,10 @@ written down in `contracts/`.
    the smoke-test verb, no network at all.
 4. **Failures name the remedy.** An agent acts on the error directly; a human
    never reads documentation to decode what to do about it.
-5. **Structured output or it did not happen.** One JSON document per result,
-   never a sentence of prose standing in for a fact a caller needs to parse.
+5. **Structured output for anything a caller parses.** A fact a caller acts on
+   is a JSON document, never a sentence of prose standing in for it. Guidance
+   a reader simply reads is written for that reader — structure it addresses
+   nothing and costs everyone.
 6. **The caller owns the credentials.** music-deck ships no client secret and
    stores only the caller's own access token, locked to the caller alone.
 7. **Honest about the ceiling.** A handful of users, a Premium account, a
@@ -96,3 +98,11 @@ written down in `contracts/`.
 ## Changelog
 
 - **2026-09-04** — First draft, from negotiated decisions. Ratified by the intent steward (word: "ratified").
+- **2026-09-06** — Principle 5 restored to its own reasoning. It said
+  "Structured output or it did not happen"; read literally that made every byte
+  of stdout JSON, including a ten-minute setup guide nobody parses. Measured on
+  `music-deck setup`: 8,096 characters, of which 36% was scaffolding around
+  prose — ~2,188 tokens where the same words read ~1,398. Structure earns its
+  place when a caller addresses a field; it is pure cost when the caller reads
+  the whole thing. Ratified by the intent steward (word: "ok, perfect, do it
+  all").
