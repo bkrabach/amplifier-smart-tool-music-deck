@@ -367,6 +367,10 @@ def test_the_sweep_covers_every_verb_this_lane_owns():
         "whoami",
         "apply",
         "plan",
+        # MD-13's `do` is model-backed and drives a loop; its coverage is
+        # tests/test_do.py, which needs a model double this file has no
+        # business carrying.
+        "do",
     }
     surface: set[str] = set()
     for verb in VERBS:
