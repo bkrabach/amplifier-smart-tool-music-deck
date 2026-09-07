@@ -17,8 +17,10 @@ What is reachable today:
 * ``check()`` -- the deterministic smoke report (``boundary.v1`` Core 6)
 * ``plan()`` -- the one model-backed verb (``cli.v1`` Core 3): a brief becomes a
   plan document, published with the verbatim transcript of every prompt sent
-* ``check_plan_transcript()`` -- the one-way boundary as a function anyone can
-  run over that transcript (``boundary.v1`` Core 2, 3)
+* ``check_plan_transcript()`` -- no credential ever enters a prompt, as a
+  function anyone can run over that transcript (``boundary.v1`` Core 2, 3).
+  Spotify content in a prompt is permitted and passes (Core 1); an access
+  token, a refresh token or the client ID is a violation naming which
 * the error vocabulary in ``music_deck.errors`` -- the frozen refusal codes of
   ``cli.v1`` Core 6 and the exit-code mapping of Core 5, which every verb built
   after this one shares
@@ -70,7 +72,7 @@ __all__ = [
     "check",
     # the one model-backed verb -- cli.v1 Core 3, boundary.v1 Core 1, 2, 3
     "plan",
-    # the one-way boundary, checkable by anyone holding a transcript
+    # no credential in a prompt, checkable by anyone holding a transcript
     "check_plan_transcript",
     "check_prompts",
     "BoundaryReport",

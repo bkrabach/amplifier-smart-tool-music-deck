@@ -1,12 +1,16 @@
-"""The static prompt text -- the only non-caller words music-deck may send.
+"""The static prompt text music-deck ships -- every non-caller word it sends.
 
-``boundary.v1`` Core 2 splits every prompt into exactly two kinds of text: the
-caller's own, and music-deck's own static schema and prompt text. This package
-is the whole of the second kind. Nothing else in the source may contribute a
-word to a prompt, and ``music_deck.prompt_boundary`` is what makes that
-checkable: the allowed set it covers a prompt with is ``static_prompt_texts()``
-plus the caller's own arguments, so any sentence assembled from anywhere else
-shows up as residue and fails the check.
+This package holds the words music-deck itself contributes to a prompt: the
+instructions and the headings, and nothing generated at run time.
+
+It is no longer the *only* thing a prompt may carry besides the caller's own
+text. ``boundary.v1`` Core 1 was inverted on 2026-09-06 -- a model may read what
+Spotify returns -- so a prompt may carry search results and the caller's own
+playlists too, and ``music_deck.prompt_boundary`` no longer covers a prompt with
+an allowed set. What it checks now is Core 2: that no credential is in there.
+Keeping music-deck's own words in one directory is still worth doing, because a
+reviewer reading the transcript can then tell the tool's words from everything
+else at a glance.
 
 The prompt files are Markdown, split into named parts by lines of the form::
 
@@ -84,11 +88,14 @@ def plan_prompt_parts() -> dict[str, str]:
 
 
 def static_prompt_texts() -> tuple[str, ...]:
-    """Every static text music-deck may put in a prompt, longest first.
+    """Every static text music-deck ships for a prompt, longest first.
 
-    This is the allowed set for ``music_deck.prompt_boundary.check_prompts``.
-    Longest first because the cover is greedy: a shorter fragment that happens
-    to sit inside a longer one must not eat it first.
+    music-deck's own words, so a reviewer holding a transcript can tell them
+    from the caller's text and from anything fetched. It is no longer an
+    *allowed set*: ``music_deck.prompt_boundary`` stopped covering prompts when
+    ``boundary.v1`` Core 1 was inverted, and now looks for credentials instead.
+    Longest first is kept because a stable, deterministic order is worth more
+    than an arbitrary one.
     """
     texts = set(plan_prompt_parts().values())
     return tuple(sorted(texts, key=len, reverse=True))

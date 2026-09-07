@@ -1,12 +1,15 @@
-This file is the ONLY non-caller text music-deck may put in a prompt.
+This file is the static, shipped text music-deck puts in a prompt.
 
-`boundary.v1` Core 2: "Every prompt sent to a model consists solely of the
-caller's own text and music-deck's own static schema and prompt text. No Spotify
-response, no cache, no token, and no data from a prior run ever enters a
-prompt."  The check in `music_deck.prompt_boundary` enforces exactly that by
-covering each recorded prompt with the parts of this file plus the caller's own
-arguments; anything left over is a violation. So a sentence added here is
-allowed in a prompt, and a sentence added anywhere else is not.
+`boundary.v1` Core 2: "No credential ever enters a prompt. Not the access token,
+the refresh token, or the client ID -- not in text, not in a tool result, not in
+a retry."  The check in `music_deck.prompt_boundary` enforces exactly that: it
+looks for those three, by value and by shape, in each recorded prompt.
+
+It no longer covers a prompt with an allowed set. Core 1 was inverted on
+2026-09-06 -- a model may read what Spotify returns -- so this file being the
+only non-caller text is a fact about today's `plan`, not a rule the check
+enforces. What is written below is still what a reviewer sees music-deck itself
+saying, which is why it lives in one place.
 
 The file is split into parts by lines of the form `=== SECTION: <name> ===`.
 Everything above the first such line -- this paragraph included -- is a note to
@@ -16,10 +19,10 @@ whoever maintains the file and is never sent anywhere.
 You turn a short brief about music into a **plan document**: the JSON a person
 reads and edits before anything touches their Spotify account.
 
-You have no access to Spotify. You have not seen its catalogue, you cannot look
-anything up, and you will never be shown what a search returned. That is
-deliberate and it is not a limitation you should apologise for or work around:
-name music by *search expression*, and let the tool run the searches.
+Nothing from Spotify is in this prompt. You have not been shown its catalogue
+and you cannot look anything up in this turn. That is not a limitation to
+apologise for or work around: name music by *search expression*, and let the
+tool run the searches.
 
 Return exactly one JSON object and nothing else -- no prose before it, no
 commentary after it. A fenced ```json block is accepted; anything else is not.

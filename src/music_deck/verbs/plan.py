@@ -8,27 +8,32 @@ where a prompt is assembled. Four promises are kept here, in this order:
    assembled. With no usable model substrate the caller gets exit 3 naming the
    missing precondition (``cli.v1`` Core 3) -- never a silent fallback to a
    deterministic answer, and never a prompt built for a turn that cannot run.
-2. **It makes no Spotify request** (``boundary.v1`` Core 1). Nothing in this
-   module's import graph can: it reaches the network only through the model
-   seam, and it needs no token, no client ID, and no reachable
-   ``api.spotify.com``.
-3. **Every word of the prompt comes from one of two places** (``boundary.v1``
-   Core 2): ``music_deck/prompts/plan.md``, or the caller's own arguments.
-   ``assemble_prompt`` is the whole of the assembly and it interleaves nothing
-   else -- see the note on why there is no repair round.
+2. **It makes no Spotify request in this build.** A statement of fact about
+   what the code does, not a clause: ``boundary.v1`` Core 1 was inverted on
+   2026-09-06 and now *permits* a model to read what Spotify returns. Nothing
+   in this module's import graph fetches anything yet -- it reaches the network
+   only through the model seam, and needs no token, no client ID, and no
+   reachable ``api.spotify.com``. Wiring search results into the prompt is
+   allowed the day someone does it; today nobody has.
+3. **No credential enters the prompt** (``boundary.v1`` Core 2). Not the access
+   token, the refresh token, or the client ID. ``assemble_prompt`` is the whole
+   of the assembly, and it is handed none of them.
 4. **It publishes the transcript** (``boundary.v1`` Core 3), so clause 2 is
    something a reviewer confirms from the tool's own output rather than from
-   its source.
+   its source. Core 1 is what makes that load-bearing: now that a prompt *may*
+   carry Spotify content, the transcript is how a caller sees what did.
 
 Why there is no draft-and-repair round
 --------------------------------------
 The obvious way to make a model's JSON reliable is to hand a rejected draft
-back with the validator's findings and ask again. music-deck does not, and the
-reason is clause 2: a repair prompt would carry the model's own previous
-output, which is neither the caller's text nor music-deck's static prompt text.
-It would fail this tool's own boundary check -- correctly. One turn, one prompt,
-one transcript entry; a draft that does not validate is a refusal naming the
-offending path, which the caller can act on.
+back with the validator's findings and ask again. music-deck does not -- one
+turn, one prompt, one transcript entry; a draft that does not validate is a
+refusal naming the offending path, which the caller can act on. Until
+2026-09-06 the reason was the one-way boundary, which a repair prompt carrying
+the model's own previous output would have broken. That reason is gone with the
+clause; what remains is the plainer one: a second turn doubles the cost and
+halves the reviewability of a document whose whole point is that a person reads
+it before anything touches their account.
 """
 
 from __future__ import annotations
@@ -40,7 +45,7 @@ from typing import Any, Final, Sequence
 from music_deck.errors import ErrorCode, MusicDeckError
 from music_deck.intelligence import Intelligence, ModelRequest, resolve
 from music_deck.prompt_boundary import check_plan_transcript
-from music_deck.prompts import plan_prompt_parts, static_prompt_texts
+from music_deck.prompts import plan_prompt_parts
 
 PLAN_FORMAT: Final = 1
 
@@ -77,11 +82,10 @@ def assemble_prompt(brief: str, context: str | None = None) -> str:
     Joined with blank lines, which are whitespace and so cost nothing at the
     boundary check.
 
-    Verbatim matters twice over: ``plan.v1`` Core 2 wants the caller's exact
-    words in the plan, and the boundary check covers a prompt by removing its
-    allowed sources from it -- a brief that was trimmed on the way in would no
-    longer match the brief the reviewer checks against, and would read as a
-    leak.
+    Verbatim matters because ``plan.v1`` Core 2 wants the caller's exact words
+    in the plan: a brief trimmed on the way in would no longer be the brief the
+    caller gave. Nothing assembled here is a credential, which is the whole of
+    what ``boundary.v1`` Core 2 now forbids.
     """
     parts = plan_prompt_parts()
     segments = [parts["instructions"], parts["brief"], brief]
@@ -136,9 +140,9 @@ def plan(
 
     # boundary.v1 Core 2, checked by the tool against itself before the caller
     # ever sees the answer. The transcript is published either way (Core 3), but
-    # a build that leaked would fail loudly here rather than shipping a plan
-    # whose provenance nobody looked at.
-    _assert_boundary_kept(transcript, brief=brief, context=context)
+    # a build that put a credential in front of a model would fail loudly here
+    # rather than shipping a plan whose provenance nobody looked at.
+    _assert_boundary_kept(transcript)
 
     draft = extract_json_object(result.text)
     if draft is None:
@@ -401,20 +405,23 @@ def _load_object(text: str) -> dict[str, Any] | None:
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
-def _assert_boundary_kept(
-    transcript: Sequence[str], *, brief: str, context: str | None
-) -> None:
-    report = check_plan_transcript(
-        transcript, brief=brief, context=context, static_texts=static_prompt_texts()
-    )
+def _assert_boundary_kept(transcript: Sequence[str]) -> None:
+    """boundary.v1 Core 2, checked against this machine's own credentials.
+
+    The check needs no brief and no static text any more: what it looks for is
+    the access token, the refresh token and the client ID, not everything that
+    is not them. Spotify content in a prompt is Core 1's business, and Core 1
+    permits it.
+    """
+    report = check_plan_transcript(transcript)
     if not report.ok:
         raise MusicDeckError(
             "boundary_violation",
-            "music-deck refused to hand back a plan whose prompt broke its own "
-            f"one-way boundary.\n{report.describe()}",
+            "music-deck refused to hand back a plan whose prompt carried a "
+            f"credential.\n{report.describe()}",
             "This is a defect in music-deck, not in your invocation. Report it "
-            "with the message above; no Spotify content should ever be able to "
-            "reach a prompt.",
+            "with the message above; no access token, refresh token or client "
+            "ID should ever be able to reach a prompt.",
         )
 
 

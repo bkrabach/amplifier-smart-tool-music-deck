@@ -1,92 +1,125 @@
-"""The one-way boundary, as a function anyone can run.
+"""No credential ever enters a prompt, as a function anyone can run.
 
 ``boundary.v1`` Core 2 is the promise this module makes checkable:
 
-    Every prompt sent to a model consists solely of the caller's own text and
-    music-deck's own static schema and prompt text. No Spotify response, no
-    cache, no token, and no data from a prior run ever enters a prompt.
+    No credential ever enters a prompt. Not the access token, the refresh
+    token, or the client ID -- not in text, not in a tool result, not in a
+    retry. A model that can read Spotify still never reads the keys to it.
 
 ``boundary.v1`` Core 3 is what makes it checkable *from outside*: ``plan``
 returns the verbatim text of every prompt it sent, so a reviewer runs this check
 over the tool's own published output rather than over its source.
 
-How the check works
--------------------
-Not by looking for bad words -- a denylist only ever catches the leaks somebody
-already thought of. By **cover**: every allowed source text is removed from the
-prompt, and whatever is left over is a violation. The allowed set is exactly the
-two kinds of text Core 2 names -- the parts of ``music_deck/prompts/`` and the
-caller's own arguments -- so a prompt built from anything else cannot come out
-clean, whatever it happens to contain.
+What this check is, and what it replaced
+----------------------------------------
+Until 2026-09-06 this module enforced a one-way boundary: nothing Spotify
+returned could reach a prompt, checked by *cover* -- every allowed source text
+removed from the prompt, and whatever was left a violation. **That clause is
+gone**, removed by ratification rather than by accident (``boundary.v1``'s
+Changelog, and Core 1: "A model may read what Spotify returns"). A model that
+cannot see its own search results cannot correct them: asked for 90s grunge it
+wrote ``genre:grunge year:1990-1999``, which returns nothing, and only running
+the search reveals that.
 
-That direction matters. A denylist asks "does this prompt contain something I
-recognise as Spotify content?" and answers no for the leak nobody predicted.
-This asks "is every word of this prompt accounted for?" and answers no for every
-leak, including the ones that do not look like Spotify content at all.
+So search results and the caller's own playlists in a prompt are **permitted
+here, and pass**. What survives is the half that was never about content: the
+keys stay on this side of the seam.
+
+Two nets, either of which decides
+---------------------------------
+1. **Exact value.** The credentials this machine actually holds -- the stored
+   access and refresh tokens, and the client ID ``check`` reports -- searched
+   for as literal strings. Precise, and it names which one leaked.
+2. **Shape.** A Spotify access token (``BQ...``), a refresh token (``AQ...``)
+   and a 32-hex-character client ID, recognised by their form. This net exists
+   because the first is only as good as the credentials it was handed: on a
+   machine with nothing signed in the exact-value net is empty, and a check
+   with nothing to look for would pass every prompt vacuously.
+
+A 22-character Spotify id is deliberately *not* a shape here. That is content,
+and under Core 1 content is allowed.
+
+Neither net is advisory: a hit on either is a violation.
+
+No value is ever printed
+------------------------
+A violation names *which* credential and *where* -- never the value. A check
+whose failure message quoted the credential it caught would be a worse leak
+than the one it reported.
 
 Purity
 ------
 ``check_prompts`` is a pure function of its two arguments. It reads no file,
 touches no environment, and calls nothing -- so ``boundary.v1``'s conformance
-kit can call it against a transcript captured anywhere, and a caller can call it
-against a transcript music-deck printed on a machine they do not have.
+kit can call it against a transcript captured anywhere, and against credentials
+that never existed. ``check_plan_transcript`` is the convenience wrapper that is
+deliberately **not** pure: handed no credentials it gathers this machine's own,
+because a credential check has to know what the credentials are.
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Final, Sequence
+from typing import Final, Mapping, Sequence
 
 CLAUSE: Final = "boundary.v1 Core 2"
 """The clause a failure of this check breaks, named in every message."""
 
 CLAUSE_TEXT: Final = (
-    "Every prompt sent to a model consists solely of the caller's own text and "
-    "music-deck's own static schema and prompt text. No Spotify response, no "
-    "cache, no token, and no data from a prior run ever enters a prompt."
+    "No credential ever enters a prompt. Not the access token, the refresh "
+    "token, or the client ID -- not in text, not in a tool result, not in a "
+    "retry."
 )
 
-# A second, independent signal. It never decides the verdict -- the cover does
-# that -- but when residue looks like Spotify content the message says so, which
-# is the difference between "something leaked" and "the catalogue leaked".
-_SPOTIFY_MARKERS: Final[tuple[tuple[str, str], ...]] = (
-    (r"spotify:(?:track|album|artist|playlist|episode|show):[0-9A-Za-z]{22}", "a Spotify URI"),
-    (r"open\.spotify\.com/", "an open.spotify.com link"),
-    (r"api\.spotify\.com", "an api.spotify.com reference"),
-    (r'"(?:uri|href|external_urls|snapshot_id|popularity|duration_ms)"', "a Spotify API field"),
-    (r"\b[0-9A-Za-z]{22}\b", "something shaped like a Spotify id"),
-    (r"\bBQ[A-Za-z0-9_\-]{20,}", "something shaped like an access token"),
+ACCESS_TOKEN: Final = "the access token"
+REFRESH_TOKEN: Final = "the refresh token"
+CLIENT_ID: Final = "the client ID"
+"""The three credentials Core 2 names, spelled the way a message reads."""
+
+BY_VALUE: Final = "its exact value"
+BY_SHAPE: Final = "its shape"
+
+
+@dataclass(frozen=True)
+class Credential:
+    """One credential to look for: what it is, and what it is."""
+
+    kind: str
+    value: str
+
+
+# The shape net. Conservative on purpose -- each pattern is a form no Spotify
+# *content* takes, so allowing content through costs nothing here.
+_SHAPES: Final[tuple[tuple[re.Pattern[str], str], ...]] = (
+    (re.compile(r"BQ[A-Za-z0-9_\-]{60,}"), ACCESS_TOKEN),
+    (re.compile(r"AQ[A-Za-z0-9_\-]{60,}"), REFRESH_TOKEN),
+    (re.compile(r"(?<![0-9A-Za-z])[0-9a-f]{32}(?![0-9A-Za-z])"), CLIENT_ID),
 )
+
+_MIN_VALUE_LEN: Final = 8
+"""A shorter value is not searched for: too short to be a credential, and long
+enough to match half the prompt if a config file holds something odd."""
 
 
 @dataclass(frozen=True)
 class Violation:
-    """One prompt carrying text from neither allowed source."""
+    """One credential found inside one prompt. Carries no credential value."""
 
     prompt_index: int
-    residue: str
+    credential: str
+    found_by: str
+    at: int
+    length: int
     clause: str = CLAUSE
 
-    @property
-    def looks_like(self) -> tuple[str, ...]:
-        """What the residue resembles, if anything recognisable."""
-        found: list[str] = []
-        for pattern, description in _SPOTIFY_MARKERS:
-            if re.search(pattern, self.residue) and description not in found:
-                found.append(description)
-        return tuple(found)
-
     def describe(self) -> str:
-        head = (
-            f"{self.clause} broken by prompt {self.prompt_index}: "
-            f"{len(self.residue)} characters came from neither the caller's own "
-            f"arguments nor music-deck's static prompt text"
+        return (
+            f"{self.clause} broken by prompt {self.prompt_index}: it carries "
+            f"{self.credential}, caught by {self.found_by}, at character "
+            f"{self.at} ({self.length} characters long). The value is not "
+            "printed here -- printing it would leak it a second time."
         )
-        recognised = self.looks_like
-        if recognised:
-            head += f" (it carries {', '.join(recognised)})"
-        return f"{head}.\n    unaccounted-for text: {_snippet(self.residue)}"
 
 
 @dataclass(frozen=True)
@@ -96,16 +129,33 @@ class BoundaryReport:
     ok: bool
     checked: int
     violations: tuple[Violation, ...] = ()
+    known: int = 0
+    """How many exact credential values were searched for. Reported because a
+    pass against zero of them is a weaker statement than a pass against three."""
 
     def describe(self) -> str:
-        if self.ok:
+        if self.ok and self.checked == 0:
             return (
-                f"{CLAUSE} kept: every one of {self.checked} prompt(s) is covered "
-                "by the caller's own arguments and music-deck's static prompt text, "
-                "with nothing left over."
+                f"{CLAUSE} not checked: no prompt was examined, so nothing was "
+                "proven. An absent transcript is not a passing one."
             )
+        if self.ok:
+            head = (
+                f"{CLAUSE} kept: none of {self.checked} prompt(s) carries a "
+                f"credential -- searched for {self.known} known credential "
+                "value(s), and for the shape of an access token, a refresh "
+                "token and a client ID."
+            )
+            if not self.known:
+                head += (
+                    " No credential value was supplied, so only the shape net "
+                    "ran: this machine holds nothing to leak."
+                )
+            return head
+        prompts = len({violation.prompt_index for violation in self.violations})
         lines = [
-            f"{CLAUSE} BROKEN in {len(self.violations)} of {self.checked} prompt(s).",
+            f"{CLAUSE} BROKEN in {prompts} of {self.checked} prompt(s), "
+            f"{len(self.violations)} finding(s).",
             f"  the clause: {CLAUSE_TEXT}",
         ]
         lines += [f"  {violation.describe()}" for violation in self.violations]
@@ -118,84 +168,163 @@ class BoundaryReport:
 
 class BoundaryViolation(AssertionError):
     """Raised when a transcript fails the check. An AssertionError on purpose:
-    a broken one-way boundary is a fact about the program, not a user error."""
+    a credential in a prompt is a fact about the program, not a user error."""
 
 
-def uncovered(prompt: str, allowed: Sequence[str]) -> str:
-    """The text of ``prompt`` that no allowed source accounts for.
+CredentialSet = Mapping[str, str] | Sequence["Credential | tuple[str, str]"]
 
-    Removes every occurrence of every allowed text, longest first -- longest
-    first so a short fragment cannot chew a hole in a longer one before it is
-    matched -- then discards whitespace, which is all the assembler adds when it
-    joins its segments together.
 
-    Returns "" when the prompt is fully accounted for.
+def as_credentials(credentials: CredentialSet) -> tuple[Credential, ...]:
+    """Normalise however the caller spelled the credential set.
+
+    A mapping of ``{kind: value}`` is the ergonomic form; a sequence of
+    ``Credential`` or ``(kind, value)`` pairs is the explicit one. A bare
+    sequence of strings -- the shape the *removed* cover-based check took as its
+    allowed set -- is refused loudly rather than iterated into nonsense.
     """
-    segments = [prompt]
-    for text in sorted({t for t in allowed if t and t.strip()}, key=len, reverse=True):
-        split: list[str] = []
-        for segment in segments:
-            split.extend(segment.split(text))
-        segments = split
-    return " ".join(segment.strip() for segment in segments if segment.strip())
+    if isinstance(credentials, Mapping):
+        return tuple(
+            Credential(str(kind), str(value))
+            for kind, value in credentials.items()
+            if value
+        )
+    out: list[Credential] = []
+    for entry in credentials:
+        if isinstance(entry, Credential):
+            out.append(entry)
+            continue
+        if isinstance(entry, str):
+            raise TypeError(
+                "check_prompts' second argument is now the CREDENTIALS to look "
+                "for, not the allowed source texts it used to cover a prompt "
+                "with -- boundary.v1 Core 2 was inverted on 2026-09-06. Pass "
+                "{'the access token': <value>} or a sequence of Credential."
+            )
+        kind, value = entry
+        out.append(Credential(str(kind), str(value)))
+    return tuple(out)
 
 
-def check_prompts(prompts: Sequence[str], allowed: Sequence[str]) -> BoundaryReport:
-    """Check every prompt against the two kinds of text Core 2 allows.
+def credentials_in(
+    prompt: str,
+    credentials: CredentialSet = (),
+    *,
+    prompt_index: int = 0,
+) -> tuple[Violation, ...]:
+    """Every credential found in one prompt, by exact value or by shape.
 
-    ``allowed`` is music-deck's own static prompt text plus the caller's own
-    arguments -- nothing else, ever. Pure: same arguments, same answer,
-    anywhere.
+    Both nets run over the same prompt; a span already reported by the
+    exact-value net is not reported a second time by the shape net, so the
+    number of findings is a number of leaked credentials.
     """
+    found: dict[tuple[int, int], Violation] = {}
+    for credential in as_credentials(credentials):
+        value = credential.value
+        if len(value) < _MIN_VALUE_LEN:
+            continue
+        start = prompt.find(value)
+        while start != -1:
+            span = (start, len(value))
+            found.setdefault(
+                span, Violation(prompt_index, credential.kind, BY_VALUE, *span)
+            )
+            start = prompt.find(value, start + 1)
+    for pattern, kind in _SHAPES:
+        for match in pattern.finditer(prompt):
+            span = (match.start(), len(match.group(0)))
+            found.setdefault(span, Violation(prompt_index, kind, BY_SHAPE, *span))
+    return tuple(found[span] for span in sorted(found))
+
+
+def check_prompts(
+    prompts: Sequence[str], credentials: CredentialSet = ()
+) -> BoundaryReport:
+    """Check every prompt for the credentials Core 2 forbids.
+
+    ``credentials`` is what to look for by exact value -- typically
+    ``machine_credentials()``. The shape net runs whether or not anything was
+    passed. Pure: same arguments, same answer, anywhere.
+    """
+    known = as_credentials(credentials)
     violations = tuple(
-        Violation(prompt_index=index, residue=residue)
+        violation
         for index, prompt in enumerate(prompts)
-        if (residue := uncovered(prompt, allowed))
+        for violation in credentials_in(prompt, known, prompt_index=index)
     )
     return BoundaryReport(
-        ok=not violations, checked=len(prompts), violations=violations
+        ok=not violations,
+        checked=len(prompts),
+        violations=violations,
+        known=len(known),
     )
+
+
+def machine_credentials() -> tuple[Credential, ...]:
+    """Every credential this machine actually holds, for the exact-value net.
+
+    The client ID as ``check`` resolves it -- environment first, then the config
+    file, so a caller who ran ``music-deck setup --client-id`` is covered -- plus
+    the access and refresh tokens in the stored token file. Never raises: a
+    machine with nothing signed in has nothing to leak, and returns ``()``.
+    """
+    try:
+        from music_deck.auth import read_token, resolve_client_id
+    except Exception:  # noqa: BLE001 - a check that cannot import cannot gather
+        return ()
+
+    found: list[Credential] = []
+    try:
+        client_id, _source = resolve_client_id()
+    except Exception:  # noqa: BLE001 - "not configured" is the ordinary case
+        client_id = None
+    if client_id:
+        found.append(Credential(CLIENT_ID, client_id))
+
+    try:
+        token = read_token()
+    except Exception:  # noqa: BLE001 - no token, or an unreadable one
+        token = None
+    if isinstance(token, dict):
+        for key, kind in (("access_token", ACCESS_TOKEN), ("refresh_token", REFRESH_TOKEN)):
+            value = token.get(key)
+            if isinstance(value, str) and value.strip():
+                found.append(Credential(kind, value.strip()))
+    return tuple(found)
 
 
 def check_plan_transcript(
     transcript: Sequence[str],
     *,
-    brief: str,
-    context: str | None = None,
-    static_texts: Sequence[str] | None = None,
+    credentials: CredentialSet | None = None,
 ) -> BoundaryReport:
-    """Check a ``plan`` result's transcript against the inputs that produced it.
+    """Check a ``plan`` result's transcript for credentials.
 
     The convenience wrapper a reviewer reaches for: hand it what ``plan``
-    printed and the arguments you gave, and it assembles the allowed set for
-    you. ``static_texts`` defaults to ``music_deck.prompts.static_prompt_texts()``
-    -- passed in only when checking a transcript from a different build than the
-    one running the check.
+    printed and it looks for this machine's own credentials, plus anything
+    shaped like one. Pass ``credentials`` explicitly to check a transcript
+    against credentials this machine does not hold -- which is how a conformance
+    kit proves the check *fails* without ever handling a real token.
     """
-    if static_texts is None:
-        from music_deck.prompts import static_prompt_texts
-
-        static_texts = static_prompt_texts()
-    allowed = [*static_texts, brief]
-    if context:
-        allowed.append(context)
-    return check_prompts(transcript, allowed)
-
-
-def _snippet(text: str, limit: int = 240) -> str:
-    flattened = " ".join(text.split())
-    if len(flattened) <= limit:
-        return repr(flattened)
-    return repr(flattened[:limit] + f"... [{len(flattened) - limit} more characters]")
+    if credentials is None:
+        credentials = machine_credentials()
+    return check_prompts(transcript, credentials)
 
 
 __all__ = [
+    "ACCESS_TOKEN",
+    "BY_SHAPE",
+    "BY_VALUE",
     "CLAUSE",
     "CLAUSE_TEXT",
+    "CLIENT_ID",
+    "REFRESH_TOKEN",
     "BoundaryReport",
     "BoundaryViolation",
+    "Credential",
     "Violation",
+    "as_credentials",
     "check_plan_transcript",
     "check_prompts",
-    "uncovered",
+    "credentials_in",
+    "machine_credentials",
 ]
