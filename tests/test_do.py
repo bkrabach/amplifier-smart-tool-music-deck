@@ -121,9 +121,15 @@ class Spotify:
         *,
         playlist_id: str = PLAYLIST_ID,
         holds: list[dict[str, Any]] | None = None,
+        wrapper: str = "track",
     ) -> None:
         self.by_query = by_query
         self.playlist_id = playlist_id
+        # How a playlist-items entry wraps its object. `track` is what this
+        # repository's fixtures have always used; `item` is what Spotify
+        # actually sends -- see `test_the_read_back_reads_the_shape_spotify_
+        # really_sends`, and `_ITEM_WRAPPERS` in do.py for the measurement.
+        self.wrapper = wrapper
         self.holds: list[dict[str, Any]] = list(holds) if holds is not None else []
         self.explicit_holds = holds is not None
         self.created: list[str] = []
@@ -171,9 +177,21 @@ class Spotify:
             return json_response(200, {"snapshot_id": "snapshot-under-test"})
 
         if path.endswith("/items"):
-            return json_response(200, page([saved(track) for track in self.holds]))
+            return json_response(
+                200, page([self._entry(track) for track in self.holds])
+            )
 
         raise AssertionError(f"do sent an unexpected request: {request.method} {path}")
+
+    def _entry(self, track: dict[str, Any]) -> dict[str, Any]:
+        entry = saved(track, key=self.wrapper)
+        if self.wrapper == "item":
+            # Spotify's real entry carries a *boolean* `track` alongside the
+            # object, saying "this item is a track rather than an episode".
+            # Mistaking that discriminator for the track is the whole bug.
+            entry["track"] = True
+            entry["episode"] = False
+        return entry
 
 
 def connect(monkeypatch, double: Spotify, *, budget: int = 64) -> FakeTransport:
@@ -480,6 +498,38 @@ def test_the_result_reports_what_spotify_says_it_holds_not_what_was_written(
         if entry[0] == "GET" and entry[1].endswith("/items")
     ]
     assert reads, sent(transport)
+
+
+def test_the_read_back_reads_the_shape_spotify_really_sends(monkeypatch, signed_in):
+    """The bug the doubles hid, and the measurement that found it.
+
+    Measured against a real account on 2026-09-07: an entry from
+    ``GET /playlists/{id}/items`` wraps its object under ``item``, and carries a
+    **boolean** ``track: true`` beside it as a "this is a track, not an episode"
+    discriminator. ``_tracks_of`` read ``entry["track"]``, found ``True``, and
+    fell through to the entry itself, which has no ``uri`` -- so a run that had
+    just written three songs reported an empty playlist and refused
+    ``partial_result``.
+
+    Every fixture in this repository wrapped items under ``track``, which is why
+    655 tests agreed with the code instead of with Spotify.
+    """
+    spotify = Spotify({LIVE_QUERY: GRUNGE}, wrapper="item")
+    connect(monkeypatch, spotify)
+    model = Scripted(
+        call("search", query=LIVE_QUERY, type="track", limit=10),
+        call("create_playlist", name="Flannel", tracks=uris(3)),
+        call("finish", summary="done"),
+        "Done.",
+    )
+
+    result = do(BRIEF, intelligence=model)
+
+    assert [track["name"] for track in result["tracks"]] == [
+        track["name"] for track in GRUNGE[:3]
+    ]
+    assert result["read_back"]["returned"] == 3
+    assert result["completeness"]["read_back"] == 3
 
 
 def test_every_spotify_item_in_the_result_carries_its_link(monkeypatch, signed_in):
