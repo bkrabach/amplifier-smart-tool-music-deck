@@ -17,10 +17,11 @@ What it proves
 * `boundary.v1` kit assert -- "one live round-trip: `login` -> `plan` ->
   `apply` -> the playlist exists -- run by the owner against their own
   Development Mode app."
-* `boundary.v1` Core 2 -- the prompt transcript carries no Spotify content.
-  Checked here with `music_deck.prompt_boundary.check_plan_transcript`, the
-  same cover-based check the library runs against itself, so this script and
-  the tool agree on what "kept" means.
+* `boundary.v1` Core 2 -- the prompt transcript carries no credential: not the
+  access token, the refresh token, or the client ID. Checked here with
+  `music_deck.prompt_boundary.check_plan_transcript`, the same check the library
+  runs against itself, so this script and the tool agree on what "kept" means.
+  Spotify *content* in a prompt is permitted by Core 1 and passes.
 * `boundary.v1` Core 3 -- the transcript is an observable output, written into
   the evidence document verbatim.
 * `cli.v1` Core 4/5/6 -- one JSON document per result; a `partial_result` is a
@@ -44,8 +45,11 @@ it can pass:
 4. **No fetched Spotify content is persisted either.** The document records
    counts, the plan (which by `plan.v1` Core 5 carries no Spotify content), the
    transcript, and the one playlist the run created. Any other Spotify id, URI
-   or link found in the document refuses the write -- `boundary.v1` Core 8's
-   spirit applied to this script's own output.
+   or link found in the document refuses the write. Since 2026-09-06 this is
+   **this script's own discipline, not a contract requirement**: `boundary.v1`
+   Core 8 now lets an artifact the caller asked for carry Spotify content. Kept
+   anyway, because an evidence file is committed to a repository and a record of
+   somebody's listening habits is not what a reviewer came to read.
 
 `--self-test` exercises all four gates against synthetic inputs, with no
 Spotify account, no provider and no network. That is the part a lane can run;
@@ -357,7 +361,7 @@ def apply_result(run: Run) -> tuple[Any, str | None, str]:
 # --------------------------------------------------------------------------- #
 @dataclass(frozen=True)
 class Preconditions:
-    client_id_var: str | None
+    client_id_source: str | None
     provider: str | None
     provider_credential_var: str | None
     engine_installed: bool
@@ -372,16 +376,25 @@ def preconditions() -> Preconditions:
     """What this machine has, and what it is missing, for a live round trip."""
     problems: list[str] = []
 
-    client_id_var: str | None = None
-    for name in ("MUSIC_DECK_CLIENT_ID", "SPOTIFY_CLIENT_ID"):
-        if os.environ.get(name, "").strip():
-            client_id_var = name
-            break
-    if client_id_var is None:
+    # Asked the way `check` asks it: environment first, then the config file.
+    # An env-only look would report "no client id" on every machine whose owner
+    # ran `music-deck setup --client-id`, which is the documented way to set one
+    # -- a precondition failure for a precondition that is actually met.
+    client_id_source: str | None = None
+    try:
+        from music_deck.auth import resolve_client_id
+
+        _client_id, client_id_source = resolve_client_id()
+    except Exception:  # noqa: BLE001 - reported below as "no client id"
+        client_id_source = None
+    if client_id_source is None:
         problems.append(
-            "No Spotify client id. Set MUSIC_DECK_CLIENT_ID (SPOTIFY_CLIENT_ID is "
-            "accepted too) to your own Development Mode app's client id -- see "
-            "docs/spotify-app.md. music-deck ships no credential of its own."
+            "No Spotify client id in any of the places music-deck reads: "
+            "MUSIC_DECK_CLIENT_ID, SPOTIFY_CLIENT_ID, or `client_id` in the "
+            "config file. Run `music-deck setup --client-id <your client id>` "
+            "to write it, or `music-deck setup --guide` for the steps to "
+            "register your own Development Mode app. music-deck ships no "
+            "credential of its own."
         )
 
     provider: str | None = None
@@ -389,6 +402,7 @@ def preconditions() -> Preconditions:
     engine = False
     try:
         from music_deck.intelligence import (
+            ENGINE_INSTALL_HINT,
             available_providers,
             credential_env_var,
             credentialled_providers,
@@ -417,17 +431,20 @@ def preconditions() -> Preconditions:
                 "GOOGLE_API_KEY, AZURE_OPENAI_API_KEY)."
             )
         if not engine:
+            # The library's own hint, never a second copy of it: music-deck is
+            # installed with `uv tool install`, and a `uv pip install` line has
+            # no way to name the tool's virtualenv, so it is unusable by exactly
+            # the reader who needs it. Taking the string from the library also
+            # means this script cannot drift to a stale engine ref again.
             problems.append(
                 "The amplifier-agent engine is not installed, so `plan` will refuse "
-                "with exit 3 before it builds a prompt. Install it: "
-                'uv pip install "amplifier-agent @ '
-                'git+https://github.com/microsoft/amplifier-agent@main".'
+                f"with exit 3 before it builds a prompt. Install it: {ENGINE_INSTALL_HINT}"
             )
     except Exception as exc:  # noqa: BLE001 - report it, never guess past it
         problems.append(f"music_deck could not be imported here: {type(exc).__name__}: {exc}")
 
     return Preconditions(
-        client_id_var=client_id_var,
+        client_id_source=client_id_source,
         provider=provider,
         provider_credential_var=credential_var,
         engine_installed=engine,
@@ -560,7 +577,10 @@ def round_trip(
     trip.transcript = [entry for entry in raw_transcript if isinstance(entry, str)] if isinstance(raw_transcript, list) else []
 
     # -- boundary.v1 Core 2, checked against the tool's own published output ---
-    ok, verdict = boundary_check(trip.transcript, brief=brief)
+    # No `credentials` argument: the check gathers this machine's real client ID
+    # and stored tokens itself, which is the whole point of running it here
+    # rather than against fixtures.
+    ok, verdict = boundary_check(trip.transcript)
     trip.boundary_verdict = verdict
     trip.add(Step("boundary.v1 Core 2", ok, verdict.splitlines()[0]))
     if not ok:
@@ -595,13 +615,17 @@ def round_trip(
     return trip
 
 
-def boundary_check(transcript: Sequence[str], *, brief: str) -> tuple[bool, str]:
-    """Run the library's own cover-based boundary check over the transcript.
+def boundary_check(
+    transcript: Sequence[str], *, credentials: Any = None
+) -> tuple[bool, str]:
+    """Run the library's own credential check over the transcript.
 
-    Not a denylist. `music_deck.prompt_boundary` removes every allowed source --
-    music-deck's static prompt text and the caller's own brief -- from each
-    prompt and calls whatever is left over a violation. That direction is what
-    makes it catch the leak nobody predicted.
+    `boundary.v1` Core 2: no credential ever enters a prompt -- not the access
+    token, the refresh token, or the client ID. `music_deck.prompt_boundary`
+    looks for all three by exact value (this machine's own, when `credentials`
+    is left None) and by shape, so a credential it was never handed is caught
+    too. Spotify content in a prompt is Core 1's business and Core 1 permits it:
+    a transcript full of search results passes here, deliberately.
     """
     if not transcript:
         return False, (
@@ -611,7 +635,7 @@ def boundary_check(transcript: Sequence[str], *, brief: str) -> tuple[bool, str]
     try:
         from music_deck.prompt_boundary import check_plan_transcript
 
-        report = check_plan_transcript(transcript, brief=brief)
+        report = check_plan_transcript(transcript, credentials=credentials)
     except Exception as exc:  # noqa: BLE001
         return False, f"the boundary check could not run: {type(exc).__name__}: {exc}"
     return report.ok, report.describe()
@@ -654,7 +678,7 @@ def render_evidence(
         f"- Produced by `evidence/live_round_trip.py` on {when}.",
         f"- Repository commit: `{commit}`.",
         f"- Binary invoked as: `{' '.join(base)}`.",
-        f"- Spotify client id read from: `{pre.client_id_var}`.",
+        f"- Spotify client id read from: `{pre.client_id_source}`.",
         f"- Model provider: `{pre.provider}`, credential read from "
         f"`{pre.provider_credential_var}` (the value appears nowhere in this file).",
         f"- Brief given to `plan`: `{brief}`",
@@ -686,8 +710,10 @@ def render_evidence(
         "## The prompt transcript (`boundary.v1` Core 3)",
         "",
         "Every prompt sent to the model, verbatim, exactly as `plan` published "
-        "it. Read it and you can confirm `boundary.v1` Core 2 yourself: nothing "
-        "here came from Spotify.",
+        "it. Read it and you can confirm `boundary.v1` Core 2 yourself: no "
+        "access token, no refresh token, no client ID. Under Core 1 a prompt "
+        "*may* carry what Spotify returned -- which is exactly why this section "
+        "is here to be read rather than taken on trust.",
         "",
     ]
     for index, prompt in enumerate(trip.transcript):
@@ -722,9 +748,10 @@ def render_evidence(
         "- No provider credential and no Spotify token. Both are searched for "
         "before this file is written, and a hit refuses the write.",
         "- No track, artist or album fetched from Spotify -- not a title, not an "
-        "id, not a URI. Only counts, and the one playlist named above. "
-        "`boundary.v1` Core 8 keeps Spotify content out of what persists; this "
-        "script holds its own output to the same line.",
+        "id, not a URI. Only counts, and the one playlist named above. This is "
+        "this script's own line, not `boundary.v1` Core 8's: since 2026-09-06 "
+        "Core 8 permits an artifact the caller asked for to carry Spotify "
+        "content. An evidence file gets held to the stricter rule anyway.",
         "",
     ]
     if trip.partial_code:
@@ -818,9 +845,10 @@ def self_test() -> int:
 
     This is the part of the script a lane can run and a reviewer can repeat.
     It proves the gates *refuse*: that an empty playlist fails, that a leaked
-    credential is caught, that fetched Spotify content is caught, and that a
-    contaminated transcript fails the boundary check. It proves nothing at all
-    about Spotify -- that is what the live run is for.
+    credential is caught, that fetched Spotify content is not written to the
+    evidence file, and that a transcript carrying a credential fails the
+    boundary check while one carrying Spotify content passes it. It proves
+    nothing at all about Spotify -- that is what the live run is for.
     """
     cases: list[tuple[str, bool, str]] = []
 
@@ -965,24 +993,60 @@ def self_test() -> int:
         )
 
     # -- boundary.v1 Core 2, over a real assembled prompt ---------------------
+    # The pair, inverted on 2026-09-06 with the clause: Spotify content in a
+    # prompt now PASSES (Core 1), a credential in a prompt FAILS (Core 2). The
+    # credentials below are shape-real and value-fake, shipped in
+    # `music_deck.testing`, so this gate is exercised without a real token.
     try:
+        from music_deck.prompt_boundary import ACCESS_TOKEN, CLIENT_ID, REFRESH_TOKEN
+        from music_deck.testing import (
+            FAKE_ACCESS_TOKEN,
+            FAKE_CLIENT_ID,
+            FAKE_REFRESH_TOKEN,
+            SPOTIFY_SEARCH_RESULTS,
+            credential_leak_prompt,
+        )
         from music_deck.verbs.plan import assemble_prompt
 
         brief = "three upbeat 90s guitar songs for a Saturday morning"
+        fakes = {
+            ACCESS_TOKEN: FAKE_ACCESS_TOKEN,
+            REFRESH_TOKEN: FAKE_REFRESH_TOKEN,
+            CLIENT_ID: FAKE_CLIENT_ID,
+        }
         clean = assemble_prompt(brief)
-        ok, verdict = boundary_check([clean], brief=brief)
+        ok, verdict = boundary_check([clean], credentials=fakes)
         case("a clean transcript keeps boundary.v1 Core 2", ok is True, verdict.splitlines()[0])
 
-        contaminated = clean + "\n\nHere is what Spotify returned: " + json.dumps(
-            {"name": "Song 2", "uri": f"spotify:track:{track}", "popularity": 71}
-        )
-        ok, verdict = boundary_check([contaminated], brief=brief)
+        with_content = clean + "\n\n" + SPOTIFY_SEARCH_RESULTS
+        ok, verdict = boundary_check([with_content], credentials=fakes)
         case(
-            "a transcript carrying fetched Spotify content BREAKS it",
+            "a transcript carrying fetched Spotify content PASSES (Core 1)",
+            ok is True,
+            verdict.splitlines()[0],
+        )
+
+        for kind, value in fakes.items():
+            ok, verdict = boundary_check(
+                [credential_leak_prompt(brief, value)], credentials=fakes
+            )
+            leaked = value not in verdict
+            case(
+                f"a transcript carrying {kind} BREAKS it, by name",
+                ok is False and kind in verdict and leaked,
+                verdict.splitlines()[0],
+            )
+
+        ok, verdict = boundary_check(
+            [credential_leak_prompt(brief, FAKE_ACCESS_TOKEN)], credentials={}
+        )
+        case(
+            "a credential the check was never given is still caught, by shape",
             ok is False,
             verdict.splitlines()[0],
         )
-        ok, verdict = boundary_check([], brief=brief)
+
+        ok, verdict = boundary_check([])
         case("an absent transcript FAILS rather than passing vacuously", ok is False, verdict.splitlines()[0])
     except Exception as exc:  # noqa: BLE001
         case("the boundary check is importable", False, f"{type(exc).__name__}: {exc}")
@@ -1007,7 +1071,9 @@ def self_test() -> int:
     print(
         f"PASS: all {len(cases)} gate checks hold. An empty playlist cannot pass, a "
         "leaked credential cannot be written, fetched Spotify content cannot be "
-        "written, and a contaminated transcript fails boundary.v1 Core 2.\n"
+        "written, and a transcript carrying any of the three credentials fails "
+        "boundary.v1 Core 2 by name -- while a transcript carrying Spotify "
+        "search results passes, as Core 1 now allows.\n"
         "This says nothing about Spotify: only the owner's live run does that."
     )
     return EXIT_PASS
@@ -1089,7 +1155,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     base = resolve_cli(args.music_deck)
     print(f"  binary: {' '.join(base)}")
-    print(f"  client id from: {pre.client_id_var}")
+    print(f"  client id from: {pre.client_id_source}")
     print(f"  provider: {pre.provider} (credential from {pre.provider_credential_var})")
     print(f"  brief: {args.brief}\n")
 
