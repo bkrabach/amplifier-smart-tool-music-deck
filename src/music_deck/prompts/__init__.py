@@ -41,15 +41,17 @@ _SECTION_RE: Final = re.compile(r"^=== SECTION: ([a-z_]+) ===$", re.MULTILINE)
 # reason to send a prompt with a hole in it.
 PLAN_PARTS: Final[tuple[str, ...]] = ("instructions", "brief", "context")
 
-# The parts `do.md` must carry. `do` re-sends a whole prompt every turn -- the
-# instructions, the tool vocabulary, the caller's brief, everything observed so
-# far, and what is left of the budget -- so each transcript entry is a complete
-# record of one turn rather than a fragment a reader has to reassemble.
+# The parts `do.md` must carry: the instructions, the tool vocabulary, the
+# caller's brief, and the run's budget. There is no `history` part, and its
+# absence is deliberate -- since 2026-09-06 the model drives `do` through native
+# tool calls, so what it has already learned reaches it as those calls' results
+# rather than as a history music-deck re-narrates into the next prompt. A
+# section this package still required but `music_deck.verbs.do` had stopped
+# sending would be a promise the shipped file could not keep.
 DO_PARTS: Final[tuple[str, ...]] = (
     "instructions",
     "tools",
     "brief",
-    "history",
     "ceilings",
 )
 

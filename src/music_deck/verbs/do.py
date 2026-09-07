@@ -8,10 +8,11 @@ anyway. ``genre:grunge`` alone returns five. ``genre:alternative
 year:1990-1999`` returns five. Only that one conjunction dies, and nothing
 except *running the search* reveals it.
 
-``do`` is the verb that runs it. A bounded loop: music-deck sends a prompt, the
-model answers with one tool call, music-deck runs that tool against the same
-library functions ``apply`` uses, and puts **what Spotify actually returned**
-into the next prompt. The model sees the zero, and corrects.
+``do`` is the verb that runs it. A bounded loop: music-deck declares six tools
+to the engine, the model calls them **natively**, each handler runs against the
+same library functions ``apply`` uses, and **what Spotify actually returned**
+goes back to the model as that call's result. The model sees the zero, and
+corrects.
 
 Contracts served
 ----------------
@@ -24,9 +25,13 @@ Contracts served
   transcript **before anything is handed back**, on the success path and on the
   refusal path both, and fails closed if it reports a violation.
 * ``boundary.v1`` Core 3 -- the transcript is an observable output. Every prompt
-  is assembled in this module and nowhere else, and each turn re-sends the whole
-  prompt, so a transcript entry is a complete record of one turn rather than a
-  fragment a reader has to reassemble.
+  is assembled in this module and nowhere else. ``transcript`` is what that
+  clause names: every prompt sent, verbatim. Since the model now drives itself
+  through native tool calls, a prompt is not the only thing music-deck sends it,
+  so the result also carries ``tool_results`` -- the exact strings each handler
+  handed back. Together they are the whole of what crossed from music-deck to
+  the model, and :func:`_assert_nothing_leaked` checks **both** for credentials,
+  which is Core 2's "not in text, not in a tool result" read literally.
 * ``cli.v1`` Core 2 -- ``do`` is model-backed and ``--help`` says so. Nothing
   here imports a provider or the engine at module scope; both arrive through the
   ``Intelligence`` seam, whose imports are already lazy.
@@ -37,36 +42,56 @@ Contracts served
 * ``cli.v1`` Core 7 -- the library is the tool. Every effect goes through
   :mod:`music_deck.verbs.catalog` and :mod:`music_deck.verbs.playlists`. There is
   no second implementation of search or of a playlist write in this file.
-* ``refusals.v1`` -- every code this module can emit is named there already:
-  ``usage``, ``invalid_input``, ``partial_result``, ``no_provider_configured``
-  (through the seam), ``internal_error``, and whatever the HTTP layer raises.
+* ``refusals.v1`` -- Core 1 closes the vocabulary, and this module holds it
+  closed. Its own codes are named there already (``usage``, ``invalid_input``,
+  ``partial_result``, ``no_provider_configured``, ``internal_error``, plus
+  whatever the HTTP layer raises); the engine's are not, and
+  :func:`_named_refusal` maps them on. See that function for which, and why.
 
-Why music-deck owns the loop, and does not register tools with the engine
-------------------------------------------------------------------------
-amplifier-agent v1 can hold tools itself and run its own loop. This verb does
-not use that, and the reason is ``boundary.v1`` Core 3: with the engine driving,
-the prompts actually sent are assembled inside the engine and inside the
-provider SDK, so the only ``transcript`` music-deck could publish would be a
-*reconstruction* of them. ``music_deck.testing.intelligence_doubles`` already
-says why that is worthless -- a transcript rebuilt after the fact "would be
-evidence about itself rather than about the tool". Owning the loop makes the
-transcript the literal strings that crossed the seam.
+Why the model drives, and music-deck holds the reins
+----------------------------------------------------
+Until 2026-09-06 this verb ran its own loop and registered no tools: it
+described them in the prompt and asked the model to answer with
+``{"tool": ..., "arguments": ...}`` as text. That was wrong, and the first live
+invocation said so::
 
-Three more things follow from owning it, each of which the engine would have had
-to be trusted for instead:
+    $ music-deck do 'three 90s grunge songs in a new playlist called "..."'
+    exit 1
+    code: provider_failed
+    "The agent engine refused to run a turn on anthropic/claude-sonnet-5:
+     The provider requested an undeclared tool."
 
-* **The turn and request ceilings are enforced by this file**, not requested of
-  a model. Development Mode quota is shared and undisclosed; a runaway loop is a
-  real cost somebody else pays.
-* **An empty result set cannot become a playlist.** ``create_playlist`` takes
-  its tracks in the same call, refuses an empty list, and refuses a URI that no
-  search in this run actually returned. The empty-playlist failure above is not
-  discouraged in the prompt, it is unreachable.
-* **The approvals question does not arise.** The library's rule is that with no
-  approvals channel a tool effect fails ``approval_unavailable``; with no engine
-  tools there is no engine tool effect to approve. The gate on every write is
-  the code in :func:`_write_new_playlist` and :func:`_add_to_playlist`, which a
-  reviewer can read.
+A real model, handed a prompt describing tools, makes a **native tool call**;
+the engine refuses one it was never told about. 655 tests passed over that
+defect, because every one of them used a double that answered in exactly the
+JSON the loop was hoping for. Doubles cannot prove a provider's tool-calling
+behaviour. Only a provider can, which is why ``tests/test_do_live.py`` exists.
+
+So the model now drives the loop through the engine, and this file keeps every
+guarantee the old loop was written to hold -- each one moved into a handler
+rather than surrendered:
+
+* **The ceilings are still enforced here**, not requested of a model. The
+  engine's own iteration cap is ``-1``; ``_Run._handle`` refuses the tool call
+  that would exceed ``--max-turns`` and :class:`_BudgetedClient` refuses the
+  request that would exceed ``--max-requests``. Development Mode quota is shared
+  and undisclosed; a runaway loop is a real cost somebody else pays.
+* **An empty result set still cannot become a playlist.** ``create_playlist``
+  takes its tracks in the same call, refuses an empty list, and refuses a URI
+  that no search in this run actually returned. Unreachable, not discouraged.
+* **The transcript is still the literal strings that crossed**, because they are
+  still assembled here: the prompt in :func:`assemble_prompt`, and each tool
+  result in :meth:`_Run._handle`. Nothing is reconstructed after the fact --
+  ``music_deck.testing.intelligence_doubles`` says why that would be worthless.
+* **The approvals question now arises, and is answered.** Declaring a tool means
+  the engine consults an approvals authority before every call, and with none it
+  answers ``unavailable``. ``music_deck.intelligence._static_approval_policy``
+  is that authority: a static, deterministic allow-list of exactly the six names
+  below. It is spelled as a handler rather than the literal ``approvals="allow"``
+  for a measured reason -- the engine registers its own built-ins (``bash``,
+  ``write``, ``web_fetch`` and the rest) alongside the caller's, so "allow"
+  would hand a shell on the caller's machine to a model asked to make a
+  playlist. A denial ends the turn as a named refusal, never a traceback.
 """
 
 from __future__ import annotations
@@ -78,9 +103,12 @@ from typing import Any, Final, Mapping, Sequence
 from music_deck.errors import ErrorCode, MusicDeckError
 from music_deck.http import SpotifyClient
 from music_deck.intelligence import (
+    MISSING_PROVIDER,
     Intelligence,
     ModelRequest,
     NoModelSubstrate,
+    ToolSpec,
+    ToolStop,
     resolve,
 )
 from music_deck.prompt_boundary import check_plan_transcript
@@ -116,19 +144,119 @@ nobody can review.
 READ_BACK_LIMIT: Final = 100
 """How many tracks the closing read-back asks Spotify for."""
 
-TOOLS: Final[tuple[str, ...]] = (
-    "search",
-    "list_playlists",
-    "playlist_tracks",
-    "create_playlist",
-    "add_to_playlist",
-    "finish",
-)
-"""The whole vocabulary the model may call. Anything else is refused back to it
-as an observation, naming these -- a model that misremembers a tool name gets to
-correct itself, which is cheaper than ending the run."""
+SCHEMA_DIALECT: Final = "https://json-schema.org/draft/2020-12/schema"
+"""The JSON Schema dialect the engine validates a caller tool's schema against.
 
-_JSON_FENCE_RE: Final = re.compile(r"```(?:json)?\s*\n(.*?)```", re.DOTALL)
+Named on every schema below because the engine names it on its own built-ins,
+and because a dialect left to be inferred is a dialect nobody agreed on.
+"""
+
+_URI_OR_ID: Final[dict[str, Any]] = {"type": "string", "minLength": 1}
+_LIMIT: Final[dict[str, Any]] = {"type": "integer", "minimum": 1, "maximum": 50}
+_TRACKS: Final[dict[str, Any]] = {
+    "type": "array",
+    "minItems": 1,
+    "items": {"type": "string", "minLength": 1},
+    "description": (
+        "Exact `uri` strings from a search result in THIS run. music-deck "
+        "refuses a URI no search here returned, and refuses an empty list."
+    ),
+}
+
+
+def _schema(properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
+    """One tool's input schema, closed to anything it does not name.
+
+    ``additionalProperties: False`` is not decoration: the handlers below read
+    named arguments and would silently ignore a misspelled one, so the schema is
+    where a misspelling becomes visible to the model instead of becoming a
+    default it did not ask for.
+    """
+    return {
+        "$schema": SCHEMA_DIALECT,
+        "type": "object",
+        "additionalProperties": False,
+        "properties": properties,
+        "required": required,
+    }
+
+
+TOOL_DECLARATIONS: Final[tuple[tuple[str, str, dict[str, Any]], ...]] = (
+    (
+        "search",
+        "Run one Spotify search and see exactly what came back. Judge the "
+        "result by its count and its contents, never by how good the query "
+        "looked. `genre:` combined with `year:` is the filter pair most likely "
+        "to return nothing; if it returns 0, change the query and search again.",
+        _schema(
+            {
+                "query": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": (
+                        "A Spotify search expression. Field filters help: "
+                        "artist:, album:, track:, year: (a year or a 1990-1999 "
+                        "range), genre:."
+                    ),
+                },
+                "type": {"type": "string", "enum": ["track", "album"]},
+                "limit": _LIMIT,
+            },
+            ["query"],
+        ),
+    ),
+    (
+        "list_playlists",
+        "The caller's own playlists, for when the brief names one that already "
+        "exists.",
+        _schema({"limit": _LIMIT}, []),
+    ),
+    (
+        "playlist_tracks",
+        "What is already in one of the caller's playlists.",
+        _schema({"playlist_id": _URI_OR_ID, "limit": _LIMIT}, ["playlist_id"]),
+    ),
+    (
+        "create_playlist",
+        "Create a NEW playlist and put tracks in it, in one step. There is "
+        "deliberately no way to create an empty playlist: if you have not found "
+        "tracks yet, search again first.",
+        _schema(
+            {
+                "name": {"type": "string", "minLength": 1},
+                "description": {"type": "string"},
+                "tracks": _TRACKS,
+            },
+            ["name", "tracks"],
+        ),
+    ),
+    (
+        "add_to_playlist",
+        "Add tracks to a playlist that already exists.",
+        _schema({"playlist_id": _URI_OR_ID, "tracks": _TRACKS}, ["playlist_id", "tracks"]),
+    ),
+    (
+        "finish",
+        "Stop. Call this once the brief is satisfied, or once you are certain "
+        "it cannot be. Then reply with one line and call no further tools.",
+        _schema({"summary": {"type": "string", "minLength": 1}}, ["summary"]),
+    ),
+)
+"""The whole vocabulary the model may call: name, description, input schema.
+
+One table, read twice -- by :meth:`_Run.tool_specs`, which turns it into the
+``ToolSpec`` objects the engine is handed, and by ``prompts/do.md``, which
+describes the same six in prose. They cannot drift into describing different
+tools, because the model is *offered* exactly this and nothing else: the engine
+refuses a call to a name it was not given, and
+``intelligence._static_approval_policy`` denies any other name the engine itself
+registered.
+"""
+
+TOOLS: Final[tuple[str, ...]] = tuple(name for name, _, _ in TOOL_DECLARATIONS)
+"""Just the names, in order. Derived from the declarations above so a tool
+cannot be named in one place and forgotten in the other."""
+
 _TRACK_URI_RE: Final = re.compile(r"spotify:track:[0-9A-Za-z]{22}")
 
 _RECOVERABLE: Final = frozenset({ErrorCode.USAGE, "invalid_input"})
@@ -197,44 +325,37 @@ class _BudgetedClient:
 # --------------------------------------------------------------------------- #
 # The prompt -- the whole of it, every turn
 # --------------------------------------------------------------------------- #
-def assemble_prompt(
-    brief: str,
-    history: Sequence[Mapping[str, Any]],
-    *,
-    turns_left: int,
-    requests_left: int,
-) -> str:
-    """Build the prompt for one turn: instructions, tools, brief, history, budget.
+def assemble_prompt(brief: str, *, max_turns: int, max_requests: int) -> str:
+    """Build the one prompt a ``do`` run sends: instructions, tools, brief, budget.
 
-    The whole prompt every turn, not a delta. That costs tokens and buys the
-    property ``boundary.v1`` Core 3 is for: one transcript entry is the complete
-    text of one turn, readable on its own by somebody who was not there.
+    One prompt, not one per turn. The model drives itself from here with native
+    tool calls, and what it learns along the way arrives as those calls' results
+    -- so re-sending a hand-rolled history would be describing the conversation
+    to the model *inside* the conversation it is already having.
+
+    That makes this string the whole of what ``boundary.v1`` Core 3's
+    ``transcript`` carries, and :attr:`_Run.tool_results` the rest of what
+    crossed. Both are published, and both are checked for credentials.
 
     The caller's brief goes in **verbatim**. Nothing here is a credential, which
     is the whole of what Core 2 forbids.
+
+    There is no ``history`` section any more: ``prompts/do.md`` lost it in the
+    same change, so a section this function stopped sending cannot linger in the
+    shipped file pretending it is still sent.
     """
     parts = do_prompt_parts()
-    segments = [parts["instructions"], parts["tools"], parts["brief"], brief]
-    if history:
-        segments += [parts["history"], _render_history(history)]
-    segments += [
-        parts["ceilings"],
-        f"- turns left after this one: {turns_left}\n"
-        f"- Spotify requests left: {requests_left}",
-    ]
-    return "\n\n".join(segments)
-
-
-def _render_history(history: Sequence[Mapping[str, Any]]) -> str:
-    """The action log as the model sees it: what was called, what came back."""
-    blocks: list[str] = []
-    for entry in history:
-        blocks.append(
-            f"### Turn {entry['turn']}: {entry['tool']}\n"
-            f"arguments: {json.dumps(entry['arguments'], sort_keys=True)}\n"
-            f"result: {json.dumps(entry['observation'], indent=2)}"
-        )
-    return "\n\n".join(blocks)
+    return "\n\n".join(
+        [
+            parts["instructions"],
+            parts["tools"],
+            parts["brief"],
+            brief,
+            parts["ceilings"],
+            f"- tool calls this run may make: {max_turns}\n"
+            f"- Spotify requests this run may send: {max_requests}",
+        ]
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -273,9 +394,12 @@ def do(
 
     # cli.v1 Core 3: the refusal happens here, before any prompt exists.
     # Nothing above this line has assembled a character of prompt.
-    _preflight(engine, provider)
+    chosen = _preflight(engine, provider)
 
     run = _Run(brief, turn_ceiling, request_ceiling, client)
+    # Named before the turn runs, so a run music-deck ends itself still reports
+    # which provider it was talking to rather than an empty string.
+    run.usage["provider"] = chosen
     return run.execute(engine, provider=provider, model=model)
 
 
@@ -301,6 +425,7 @@ class _Run:
         self._api: Any = None
 
         self.transcript: list[str] = []
+        self.tool_results: list[str] = []
         self.history: list[dict[str, Any]] = []
         self.searches: list[dict[str, Any]] = []
         self.turns_used = 0
@@ -309,15 +434,23 @@ class _Run:
         self.added = 0
         self.summary: str | None = None
         self.stopped_by: str | None = None
-        # Totalled across turns, not overwritten by the last one: a loop's cost
-        # is what the whole loop spent, and reporting only the final turn would
-        # make an expensive run look cheap.
+        # Set when the run ends for a reason music-deck chose. The engine will
+        # report its own failure for the same moment (`tool_failed`, because a
+        # ToolStop reaches it as ToolFailed); these two say what actually
+        # happened, and `execute` publishes them instead.
+        self.finished = False
+        self.fatal: MusicDeckError | None = None
         self.usage: dict[str, Any] = {
             "provider": "",
             "model": None,
             "turns": 0,
             "tokens_in": 0,
             "tokens_out": 0,
+            # False whenever music-deck ended the turn itself: the engine had no
+            # completed turn to report usage for, so the zeros above are
+            # "not counted", not "cost nothing". Saying which is the difference
+            # between an honest report and a cheap-looking one.
+            "tokens_counted": False,
         }
 
         # Every track URI this run has actually seen come back from Spotify,
@@ -342,7 +475,89 @@ class _Run:
     def requests_used(self) -> int:
         return 0 if self._api is None else int(self._api.used)
 
-    # -- the loop ----------------------------------------------------------- #
+    # -- what the engine is handed ------------------------------------------ #
+    def tool_specs(self) -> tuple[ToolSpec, ...]:
+        """The six tools, bound to this run.
+
+        Each handler closes over ``self``, so the ceilings, the record, and the
+        set of URIs a search actually returned are this run's and no other's.
+        The bodies are the same :meth:`_run_tool` branches the old loop called;
+        nothing was reimplemented to make them reachable from the engine.
+        """
+        return tuple(
+            ToolSpec(
+                name=name,
+                description=description,
+                input_schema=schema,
+                handler=(lambda arguments, _name=name: self._handle(_name, arguments)),
+            )
+            for name, description, schema in TOOL_DECLARATIONS
+        )
+
+    # -- one tool call ------------------------------------------------------ #
+    def _handle(self, tool: str, arguments: Mapping[str, Any]) -> str:
+        """Run one tool call and return the exact string the model will see.
+
+        The single place a ceiling can bind, a refusal can be recycled, and a
+        failure that is not the model's to fix can end the run. Three outcomes,
+        deliberately distinct:
+
+        * **an observation** -- returned as JSON. Includes the model's own
+          recoverable mistakes (a missing argument, a URI no search returned),
+          because handing those back is what lets a model correct itself at the
+          cost of one call rather than ending the run.
+        * **a ceiling** -- :class:`ToolStop`. The engine ends the turn; this run
+          has already recorded which ceiling, and publishes that.
+        * **a failure that is not the model's** -- ``not_authenticated``,
+          ``rate_limited``, ``spotify_error``. Stashed in :attr:`fatal` and
+          re-raised by :meth:`execute` **unchanged**, because a loop that
+          swallowed one would burn its whole budget re-provoking it.
+        """
+        if self.finished:
+            raise ToolStop(
+                f"`finish` was already called; {tool!r} came after it. The run "
+                "is over -- reply with one line and call no further tools."
+            )
+        if self.turns_used >= self.max_turns:
+            self.stopped_by = "turns"
+            raise ToolStop(
+                f"This run's ceiling of {self.max_turns} tool calls is spent."
+            )
+        self.turns_used += 1
+
+        if tool == "finish":
+            self.summary = _text(arguments.get("summary"))
+            self.stopped_by = "finish"
+            self.finished = True
+            observation: Any = {
+                "ok": True,
+                "note": "The run is complete. Reply with one line for the "
+                "caller and call no further tools.",
+            }
+        else:
+            try:
+                observation = self._run_tool(tool, arguments)
+            except _CeilingReached as ceiling:
+                self.stopped_by = ceiling.which
+                raise ToolStop(
+                    f"This run's ceiling of {ceiling.limit} Spotify requests is "
+                    "spent."
+                ) from None
+            except MusicDeckError as failure:
+                if failure.code not in _RECOVERABLE:
+                    self.fatal = failure
+                    raise ToolStop(failure.message) from None
+                observation = {"error": failure.code, "message": failure.message}
+
+        self._record(tool, arguments, observation)
+        rendered = json.dumps(observation, indent=2, sort_keys=False)
+        # boundary.v1 Core 2 says a credential must not reach the model "in a
+        # tool result" either, so what is checked has to be the string that was
+        # actually returned -- kept here, not rebuilt from `history` later.
+        self.tool_results.append(rendered)
+        return rendered
+
+    # -- the run ------------------------------------------------------------ #
     def execute(
         self,
         engine: Intelligence,
@@ -350,63 +565,56 @@ class _Run:
         provider: str | None,
         model: str | None,
     ) -> dict[str, Any]:
-        for turn in range(1, self.max_turns + 1):
-            prompt = assemble_prompt(
-                self.brief,
-                self.history,
-                turns_left=self.max_turns - turn,
-                requests_left=max(0, self.max_requests - self.requests_used),
-            )
-            self.transcript.append(prompt)
-            self.turns_used = turn
+        """One agentic turn: the model drives, this run holds the reins.
 
+        Exactly one call across the seam. Everything the model does after that
+        happens through :meth:`_handle`, and every way the run can end funnels
+        back here: it finished, a ceiling bound, something failed that is not
+        the model's to fix, or the engine itself refused.
+        """
+        prompt = assemble_prompt(
+            self.brief, max_turns=self.max_turns, max_requests=self.max_requests
+        )
+        self.transcript.append(prompt)
+
+        try:
             result = engine.run(
-                ModelRequest(prompt=prompt, provider=provider, model=model)
+                ModelRequest(
+                    prompt=prompt,
+                    provider=provider,
+                    model=model,
+                    tools=self.tool_specs(),
+                )
             )
-            self._count_usage(result)
-
-            call = _read_call(result.text)
-            if isinstance(call, str):
-                # Unreadable reply: hand the model its own mistake and let it
-                # correct. It costs a turn, which is the honest price.
-                self._record("(unreadable)", {}, {"error": call})
-                continue
-
-            tool, arguments = call
-            if tool == "finish":
-                self.summary = _text(arguments.get("summary"))
-                self.stopped_by = "finish"
-                break
-
-            try:
-                observation = self._run_tool(tool, arguments)
-            except _CeilingReached as ceiling:
-                self.stopped_by = ceiling.which
-                break
-            except MusicDeckError as failure:
-                if failure.code not in _RECOVERABLE:
-                    raise
-                observation = {"error": failure.code, "message": failure.message}
-
-            self._record(tool, arguments, observation)
+        except MusicDeckError as failure:
+            # A turn that ended because *this run* ended it. The engine reports
+            # its own `tool_failed`; the reason music-deck recorded is the true
+            # one, so that is what the caller gets.
+            if self.fatal is not None:
+                raise self.fatal from failure
+            if self.stopped_by is None:
+                raise _named_refusal(failure) from failure
+            self.usage["turns"] = self.turns_used
         else:
-            self.stopped_by = "turns"
+            self._count_usage(result)
+            self.summary = self.summary or _text(result.text) or None
 
         return self._conclude()
 
     def _count_usage(self, result: Any) -> None:
-        """Add one turn's cost to the run's total."""
-        self.usage["turns"] += 1
-        self.usage["tokens_in"] += int(getattr(result, "tokens_in", 0) or 0)
-        self.usage["tokens_out"] += int(getattr(result, "tokens_out", 0) or 0)
+        """What the completed turn cost, as the engine reported it."""
+        # One turn across the seam, but the model spoke once per tool call plus
+        # once to conclude. Reporting "1" would make a long run look like a
+        # short one; the tool calls are the part music-deck can actually count.
+        self.usage["turns"] = self.turns_used + 1
+        self.usage["tokens_in"] = int(getattr(result, "tokens_in", 0) or 0)
+        self.usage["tokens_out"] = int(getattr(result, "tokens_out", 0) or 0)
+        self.usage["tokens_counted"] = True
         self.usage["provider"] = getattr(result, "provider", "") or self.usage["provider"]
         self.usage["model"] = getattr(result, "model", None) or self.usage["model"]
         cost = getattr(result, "cost_usd", None)
         if cost is not None:
-            previous = self.usage.get("cost_usd")
-            self.usage["cost_usd"] = str(
-                cost if previous is None else type(cost)(previous) + cost
-            )
+            self.usage["cost_usd"] = str(cost)
 
     def _record(
         self, tool: str, arguments: Mapping[str, Any], observation: Any
@@ -637,6 +845,7 @@ class _Run:
             "brief": self.brief,
             "playlist": self.playlist,
             "tracks": read_back,
+            "tool_results": list(self.tool_results),
             "read_back": {
                 "source": "GET /playlists/{id}/items",
                 "returned": len(read_back),
@@ -663,7 +872,7 @@ class _Run:
         # boundary.v1 Core 2, on every path out, before the caller sees a word
         # of it. The refusal below carries the same document, so the check has
         # to happen above both of them or it is not on every path.
-        _assert_transcript_clean(self.transcript)
+        _assert_nothing_leaked(self.transcript, self.tool_results)
 
         if not read_back:
             raise self._partial(result, completeness, ceilings)
@@ -768,8 +977,8 @@ class _Run:
 # --------------------------------------------------------------------------- #
 # cli.v1 Core 3 -- the refusal, naming the verb the caller actually ran
 # --------------------------------------------------------------------------- #
-def _preflight(engine: Intelligence, provider: str | None) -> None:
-    """Establish a usable substrate, or refuse naming ``do``.
+def _preflight(engine: Intelligence, provider: str | None) -> str:
+    """Establish a usable substrate and name it, or refuse naming ``do``.
 
     ``intelligence.preflight``'s own message still says "``plan`` is
     model-backed and no model provider is configured" -- it was written when
@@ -785,7 +994,7 @@ def _preflight(engine: Intelligence, provider: str | None) -> None:
     substitution only fires when the message names ``plan``.
     """
     try:
-        engine.preflight(provider)
+        return engine.preflight(provider)
     except NoModelSubstrate as refusal:
         corrected = refusal.message.replace("`plan`", "`do`")
         if corrected == refusal.message:
@@ -796,78 +1005,144 @@ def _preflight(engine: Intelligence, provider: str | None) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# refusals.v1 Core 1 -- the vocabulary is closed, and this is what closes it
+# --------------------------------------------------------------------------- #
+NAMED_IN_REFUSALS: Final[frozenset[str]] = frozenset(
+    {
+        # Core 2
+        "not_authenticated",
+        "reauthorization_required",
+        "not_allowlisted",
+        # Core 3
+        "premium_required",
+        "no_active_device",
+        # Core 4
+        "rate_limited",
+        "quota_exceeded",
+        # Core 5
+        "partial_result",
+        # Core 6
+        "usage",
+        "invalid_input",
+        "invalid_plan",
+        # Core 7
+        "no_provider_configured",
+        "port_unavailable",
+        "no_browser",
+        "cancelled",
+        # Core 8
+        "spotify_error",
+        "playlist_items_unavailable",
+        "internal_error",
+        "not_implemented",
+    }
+)
+"""Every code ``contracts/refusals.v1.md`` names, clause by clause.
+
+Written out rather than imported because ``music_deck.errors`` still enumerates
+``cli.v1`` Core 6's twelve, from before the vocabulary was split out into its own
+contract on 2026-09-06 -- and that module belongs to another lane. A test sweeps
+this set against the contract file, so the copy cannot drift silently.
+"""
+
+_SUBSTRATE_CODES: Final[frozenset[str]] = frozenset(
+    {
+        "selector_rejected",
+        "model_not_selected",
+        "provider_unavailable",
+    }
+)
+"""Engine codes a **caller** can act on: the model id is stale, the deployment
+was never named, the provider cannot be reached.
+
+``refusals.v1`` Core 7 already has the right words for that -- "a model-backed
+verb without a usable substrate" -- so they take ``no_provider_configured`` and
+its exit 3, and the remedy still names ``MUSIC_DECK_MODEL`` the way the seam
+wrote it.
+
+``provider_failed`` is deliberately **not** here. The engine raises it when a
+provider requests an undeclared tool, repeats a call id, or sends undecodable
+arguments -- none of which a caller can fix by setting an environment variable,
+and the first of which was music-deck's own defect on 2026-09-06.
+"""
+
+
+def _named_refusal(failure: MusicDeckError) -> MusicDeckError:
+    """One engine failure, wearing a code ``refusals.v1`` actually names.
+
+    ``music_deck.intelligence`` carries the engine's own ``code`` through
+    verbatim, which is right for ``plan`` -- the layer that knows why a turn
+    failed is the layer that failed it, and ``tests/test_engine_boot.py`` freezes
+    that pass-through. But ``refusals.v1`` Core 1 says the *emitted* vocabulary
+    is closed, and ``provider_failed`` is in no contract. That is the drift this
+    function exists to stop, and it is why the first live ``do`` printed a code
+    its caller could not look up.
+
+    Three outcomes:
+
+    * a code :data:`NAMED_IN_REFUSALS` already names -> **unchanged**. Nothing
+      here relabels ``rate_limited`` or ``no_provider_configured``.
+    * :data:`_SUBSTRATE_CODES` -> ``no_provider_configured`` (Core 7), exit 3.
+    * everything else -> ``internal_error`` (Core 8, "a defect in music-deck; it
+      says so plainly rather than blaming the caller"). ``provider_failed``
+      lands here, and so does an approval that did not resolve to *allow*:
+      music-deck sets that policy itself, so an ``approval_denied`` or
+      ``approval_unavailable`` reaching a caller is music-deck's own defect and
+      never theirs. That is the difference between a named refusal and the
+      traceback this would otherwise be.
+
+    The engine's own code is never thrown away -- it travels in ``engine_code``,
+    so a bug report still names the thing that actually failed.
+
+    A mapping and not a new code, because ``contracts/`` is not this lane's to
+    edit. DONE.md records the gap it papers over: the vocabulary has no code for
+    "the model substrate failed mid-turn", and ``internal_error`` is a widening
+    of Core 8 to cover a case that is sometimes the provider's fault rather than
+    music-deck's.
+    """
+    code = failure.code
+    if code in NAMED_IN_REFUSALS:
+        return failure
+    if code in _SUBSTRATE_CODES:
+        return NoModelSubstrate(MISSING_PROVIDER, failure.message, failure.remedy)
+    extra = {key: value for key, value in failure.extra.items() if key != "engine_code"}
+    return MusicDeckError(
+        "internal_error",
+        failure.message,
+        failure.remedy,
+        engine_code=code,
+        **extra,
+    )
+
+
+# --------------------------------------------------------------------------- #
 # boundary.v1 Core 2 -- fail closed
 # --------------------------------------------------------------------------- #
-def _assert_transcript_clean(transcript: Sequence[str]) -> None:
-    """Refuse to hand back anything if a credential reached a prompt.
+def _assert_nothing_leaked(
+    transcript: Sequence[str], tool_results: Sequence[str]
+) -> None:
+    """Refuse to hand back anything if a credential reached the model.
+
+    Both directions music-deck can send one, because Core 2 names both: "not in
+    text, not in a tool result, not in a retry". The prompt is checked because
+    the caller's brief goes in verbatim; the tool results are checked because
+    they carry whatever Spotify said, including the text of an error.
 
     ``internal_error`` rather than a code of its own: ``refusals.v1`` Core 8
     defines it as "a defect in music-deck; it says so plainly rather than
-    blaming the caller", which is exactly what a credential in a prompt is. The
-    vocabulary is closed (Core 1), and this verb adds nothing to it.
+    blaming the caller", which is exactly what a credential reaching a model is.
+    The vocabulary is closed (Core 1), and this verb adds nothing to it.
     """
-    report = check_plan_transcript(transcript)
+    report = check_plan_transcript([*transcript, *tool_results])
     if not report.ok:
         raise MusicDeckError(
             "internal_error",
-            "music-deck refused to hand back a result whose prompt carried a "
-            f"credential.\n{report.describe()}",
+            "music-deck refused to hand back a result whose prompt or tool "
+            f"result carried a credential.\n{report.describe()}",
             "This is a defect in music-deck, not in your invocation. Report it "
             "with the message above; no access token, refresh token or client "
-            "ID should ever be able to reach a prompt.",
+            "ID should ever be able to reach a model.",
         )
-
-
-# --------------------------------------------------------------------------- #
-# Reading the model's reply
-# --------------------------------------------------------------------------- #
-def _read_call(reply: str) -> tuple[str, dict[str, Any]] | str:
-    """``(tool, arguments)``, or a sentence explaining what was wrong.
-
-    A string return is not an error to raise: it is the text handed straight
-    back to the model as its own observation, so an unreadable turn costs one
-    turn and corrects itself rather than ending the run.
-    """
-    document = _extract_json_object(reply)
-    if document is None:
-        return (
-            "Your reply carried no JSON object. Answer with exactly one JSON "
-            'object: {"thought": "...", "tool": "...", "arguments": {...}}.'
-        )
-    tool = _text(document.get("tool"))
-    if not tool:
-        return f'Your JSON has no "tool" field. Call one of: {list(TOOLS)}.'
-    arguments = document.get("arguments")
-    if arguments is None:
-        arguments = {}
-    if not isinstance(arguments, dict):
-        return '"arguments" must be a JSON object, even when empty: {}.'
-    return tool, arguments
-
-
-def _extract_json_object(reply: str) -> dict[str, Any] | None:
-    """The JSON object in a reply, fenced blocks last-first then widest span.
-
-    The same reading ``plan`` does, and deliberately so: one model, one habit,
-    one way of getting an object out of a reply that narrates around it.
-    """
-    for candidate in reversed(_JSON_FENCE_RE.findall(reply or "")):
-        loaded = _load_object(candidate)
-        if loaded is not None:
-            return loaded
-    start = (reply or "").find("{")
-    end = (reply or "").rfind("}")
-    if start != -1 and end > start:
-        return _load_object(reply[start : end + 1])
-    return None
-
-
-def _load_object(text: str) -> dict[str, Any] | None:
-    try:
-        loaded = json.loads(text)
-    except ValueError:
-        return None
-    return loaded if isinstance(loaded, dict) else None
 
 
 # --------------------------------------------------------------------------- #
@@ -979,8 +1254,11 @@ __all__ = [
     "DEFAULT_MAX_REQUESTS",
     "DEFAULT_MAX_TURNS",
     "MAX_TRACKS_SHOWN",
+    "NAMED_IN_REFUSALS",
     "READ_BACK_LIMIT",
+    "SCHEMA_DIALECT",
     "TOOLS",
+    "TOOL_DECLARATIONS",
     "assemble_prompt",
     "do",
 ]
