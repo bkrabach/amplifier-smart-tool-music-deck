@@ -195,50 +195,40 @@ def uris(count: int) -> list[str]:
     return [track["uri"] for track in GRUNGE[:count]]
 
 
-class Reactive:
-    """A model that answers by *reading the prompt it was given*.
+class Reactive(Recording):
+    """A model that answers by *reading each tool result it was handed*.
 
-    The scripted doubles prove music-deck's loop runs in the right order. This
+    The scripted doubles prove music-deck's tools run in the right order. This
     one proves the thing that actually matters: that the zero-result observation
-    reaches the model in a form it can act on. It never counts turns -- it looks
-    for the sentence music-deck puts in front of it when a search comes back
-    empty, and only then widens the query. If the observation stopped reaching
-    the prompt, this double would repeat the dead query forever and the test
-    would fail on the turn ceiling.
+    reaches the model in a form it can act on. It never counts calls -- it reads
+    the result of the one it just made, and widens the query only because
+    music-deck told it the search returned nothing. If that observation stopped
+    reaching the model, this double would repeat the dead query until the
+    ceiling bound and the test would fail.
+
+    Since 2026-09-06 the observation arrives as a tool result rather than in the
+    next prompt, so this reads ``last_result``. That is the whole difference,
+    and it is the point: the correction survived the change of mechanism.
     """
 
     implementation = "reactive"
 
-    def __init__(self) -> None:
-        self.prompts: list[str] = []
-
-    def preflight(self, provider: str | None = None) -> str:
-        return provider or "reactive"
-
-    def run(self, request):
+    def next_reply(self, last_result: str | None) -> str:
         import re
 
-        from music_deck.intelligence import ModelResult
-
-        self.prompts.append(request.prompt)
-        prompt = request.prompt
-
-        if "## What has happened so far" not in prompt:
+        if last_result is None:
             # Nothing observed yet: try the query the incident actually used.
-            reply = call("search", query=DEAD_QUERY, type="track", limit=10)
-        elif "The tracks are in the playlist" in prompt:
-            reply = call("finish", summary="Three grunge songs are in Flannel.")
-        else:
-            history = prompt.split("## What has happened so far", 1)[1]
-            counts = re.findall(r'"returned": (\d+)', history)
-            if counts and int(counts[-1]) == 0:
-                # The last thing music-deck showed it was a zero. Widen.
-                reply = call("search", query=LIVE_QUERY, type="track", limit=10)
-            else:
-                uris_seen = re.findall(r'"uri": "(spotify:track:[^"]+)"', history)
-                reply = call("create_playlist", name="Flannel", tracks=uris_seen[:3])
-
-        return ModelResult(text=reply, provider="reactive", model="reactive-1")
+            return call("search", query=DEAD_QUERY, type="track", limit=10)
+        if "The tracks are in the playlist" in last_result:
+            return call("finish", summary="Three grunge songs are in Flannel.")
+        if '"ok": true' in last_result:
+            return "Done -- three grunge songs are in Flannel."
+        counts = re.findall(r'"returned": (\d+)', last_result)
+        if counts and int(counts[-1]) == 0:
+            # The last thing music-deck showed it was a zero. Widen.
+            return call("search", query=LIVE_QUERY, type="track", limit=10)
+        seen = re.findall(r'"uri": "(spotify:track:[^"]+)"', last_result)
+        return call("create_playlist", name="Flannel", tracks=seen[:3])
 
 
 # =========================================================================== #
@@ -287,7 +277,7 @@ def test_a_zero_result_search_is_corrected_and_writes_no_empty_playlist(
 def test_the_zero_is_put_in_front_of_the_model_before_it_searches_again(
     monkeypatch, signed_in
 ):
-    """The observation the correction depends on is really in the next prompt.
+    """The observation the correction depends on really reaches the model.
 
     Without this, the test above would pass on a script that happened to search
     twice, whether or not the model was ever told the first search failed.
@@ -300,29 +290,29 @@ def test_the_zero_is_put_in_front_of_the_model_before_it_searches_again(
         call("finish", summary="done"),
     )
 
-    do(BRIEF, intelligence=model)
+    result = do(BRIEF, intelligence=model)
 
-    first, second = model.prompts[0], model.prompts[1]
-    # The first turn has no history at all -- the model has been shown nothing.
-    # (The dead query itself appears in the shipped instructions, where it is a
-    # worked example of the trap; that is not an observation.)
-    assert "## What has happened so far" not in first
+    # The zero reached the model as the result of the call it just made -- the
+    # double records what it was actually handed, not what the verb published.
+    first_result = model.observed[0]
+    assert DEAD_QUERY in first_result
+    assert '"returned": 0' in first_result
+    assert "returned NOTHING" in first_result
 
-    history = second.split("## What has happened so far", 1)[1]
-    assert DEAD_QUERY in history
-    assert '"returned": 0' in history
-    assert "returned NOTHING" in history
+    # And the caller can read the same string back: boundary.v1 Core 3's
+    # transcript is the prompt, `tool_results` is everything else that crossed.
+    assert result["tool_results"][0] == first_result
 
 
 def test_the_model_corrects_itself_from_what_it_was_shown_not_from_a_script(
     monkeypatch, signed_in
 ):
-    """The same correction, driven by a model that only reads the prompt.
+    """The same correction, driven by a model that only reads what it was shown.
 
-    ``Reactive`` has no turn counter. It widens the query because music-deck
-    told it the first one returned nothing. If that observation stopped
-    reaching the prompt, this run would spend its whole turn budget repeating
-    the dead query and refuse.
+    ``Reactive`` has no call counter. It widens the query because music-deck
+    told it the first one returned nothing. If that observation stopped reaching
+    the model, this run would spend its whole budget repeating the dead query
+    and refuse.
     """
     spotify = Spotify({DEAD_QUERY: [], LIVE_QUERY: GRUNGE})
     connect(monkeypatch, spotify)
@@ -506,21 +496,34 @@ def test_every_spotify_item_in_the_result_carries_its_link(monkeypatch, signed_i
 # =========================================================================== #
 # boundary.v1 Core 3 -- the transcript, and failing closed over it
 # =========================================================================== #
-def test_the_result_carries_one_verbatim_prompt_per_turn(monkeypatch, signed_in):
+def test_the_result_carries_every_string_that_crossed_to_the_model(
+    monkeypatch, signed_in
+):
+    """Core 3's transcript, plus the other half of what music-deck sends.
+
+    Not "a transcript exists" but "it is the strings that crossed the seam",
+    recorded by the double at the moment of sending. Since the model drives
+    itself through native tool calls, one run sends one prompt -- so the tool
+    results are the rest of what crossed, and they are published too. A reviewer
+    who reads both has read everything music-deck said to the model.
+    """
     connect(monkeypatch, Spotify({LIVE_QUERY: GRUNGE}))
     model = Recording(
         call("search", query=LIVE_QUERY, type="track", limit=10),
         call("create_playlist", name="Flannel", tracks=uris(3)),
         call("finish", summary="done"),
+        "Done.",
     )
 
     result = do(BRIEF, intelligence=model)
 
-    # Not "a transcript exists" but "it is the strings that crossed the seam",
-    # recorded by the double at the moment of sending.
     assert result["transcript"] == model.prompts
-    assert len(result["transcript"]) == 3
-    assert all(BRIEF in prompt for prompt in result["transcript"])
+    assert len(result["transcript"]) == 1
+    assert BRIEF in result["transcript"][0]
+
+    # Three calls, three results, each the exact string the handler returned.
+    assert result["tool_results"] == model.observed
+    assert len(result["tool_results"]) == 3
 
 
 def test_check_prompts_reports_ok_over_the_transcript_do_returns(
@@ -594,7 +597,8 @@ def test_the_turn_ceiling_stops_the_loop_and_reports_what_it_completed(
 
     It wrote a playlist first, so this is a *success* that names its ceiling --
     the acceptance criterion asks for both the ceiling and what was completed,
-    not for a refusal.
+    not for a refusal. The ceiling is music-deck's: the engine's own iteration
+    cap is -1, so nothing else in this stack would have stopped the model.
     """
     connect(monkeypatch, Spotify({LIVE_QUERY: GRUNGE}))
     model = Scripted(
@@ -609,8 +613,13 @@ def test_the_turn_ceiling_stops_the_loop_and_reports_what_it_completed(
     assert result["stopped_by"] == "turns"
     assert result["ceilings"]["turns"] == {"limit": 3, "used": 3}
     assert result["ceilings"]["spotify_requests"]["limit"] == DEFAULT_MAX_REQUESTS
-    assert len(result["transcript"]) == 3
     assert len(result["tracks"]) == 3
+    # Three calls admitted, three results shown; the fourth never ran.
+    assert len(result["tool_results"]) == 3
+    # And the tokens are reported as *not counted* rather than as zero: the
+    # engine had no completed turn to price, and a fabricated 0 would read as
+    # "this run was free".
+    assert result["usage"]["tokens_counted"] is False
 
 
 def test_the_turn_ceiling_with_nothing_written_refuses_and_names_the_ceiling(
@@ -778,44 +787,81 @@ def test_the_cli_returns_one_json_document_on_a_successful_run(
 # =========================================================================== #
 # The model misbehaving is survivable, not fatal
 # =========================================================================== #
-def test_an_unreadable_reply_costs_one_turn_and_the_run_carries_on(
-    monkeypatch, signed_in
-):
+def test_a_model_that_only_talks_writes_nothing_and_says_so(monkeypatch, signed_in):
+    """A model that narrates instead of calling a tool ends the run, honestly.
+
+    Under the old JSON-text protocol this was "an unreadable reply", recycled
+    back to the model as its own mistake. With native tool calls there is
+    nothing to misread: a reply carrying no tool call *is* the model's final
+    answer, the turn is over, and nothing was written. That must be a refusal
+    naming what did not happen -- never a success carrying a playlist that does
+    not exist.
+    """
     connect(monkeypatch, Spotify({LIVE_QUERY: GRUNGE}))
-    model = Scripted(
-        "I would love to help you with that!",
-        call("search", query=LIVE_QUERY, type="track", limit=10),
-        call("create_playlist", name="Flannel", tracks=uris(3)),
-        call("finish", summary="done"),
+    model = Scripted("I would love to help you with that!")
+
+    with pytest.raises(MusicDeckError) as raised:
+        do(BRIEF, intelligence=model)
+
+    failure = raised.value
+    assert failure.code == ErrorCode.PARTIAL_RESULT
+    assert failure.extra["result"]["actions"] == []
+    assert failure.extra["result"]["tool_results"] == []
+    assert failure.extra["stopped_by"] is None
+
+
+def test_a_tool_music_deck_never_declared_cannot_be_called(monkeypatch, signed_in):
+    """The measured failure of 2026-09-06, now caught and named.
+
+    The engine refuses a tool it was never given -- verbatim, "The provider
+    requested an undeclared tool" -- and raises ``provider_failed``, which
+    ``contracts/refusals.v1.md`` does not name. Core 1 says an emitted code the
+    contract does not name is drift, so ``do`` maps it onto ``internal_error``
+    (Core 8: "a defect in music-deck") and carries the engine's own code in
+    ``engine_code`` so a bug report still names the real thing.
+    """
+    connect(monkeypatch, Spotify({LIVE_QUERY: GRUNGE}))
+    model = Scripted(call("spotify_search", query=LIVE_QUERY))
+
+    with pytest.raises(MusicDeckError) as raised:
+        do(BRIEF, intelligence=model)
+
+    failure = raised.value
+    assert failure.code == "internal_error"
+    assert failure.extra["engine_code"] == "provider_failed"
+    assert "undeclared tool" in failure.message
+
+
+@pytest.mark.parametrize(
+    "engine_code,expected",
+    [
+        # music-deck sets the approvals policy itself, so an approval that did
+        # not resolve to *allow* is music-deck's own defect -- and a named
+        # refusal, never a traceback.
+        ("approval_denied", "internal_error"),
+        ("approval_unavailable", "internal_error"),
+        ("approval_timeout", "internal_error"),
+        ("provider_failed", "internal_error"),
+        ("tool_failed", "internal_error"),
+        # These the caller can act on: a stale model id, an unnamed deployment.
+        ("selector_rejected", "no_provider_configured"),
+        ("model_not_selected", "no_provider_configured"),
+        # And a code the contract already names is never relabelled.
+        ("rate_limited", "rate_limited"),
+        ("not_authenticated", "not_authenticated"),
+    ],
+)
+def test_every_engine_code_leaves_do_wearing_a_contracted_one(engine_code, expected):
+    """``refusals.v1`` Core 1, held at the one place engine codes get in."""
+    named = do_module._named_refusal(
+        MusicDeckError(engine_code, "the engine said so", "try something else")
     )
 
-    result = do(BRIEF, intelligence=model)
-
-    first = result["actions"][0]
-    assert first["tool"] == "(unreadable)"
-    assert "no JSON object" in first["observation"]["error"]
-    assert len(result["tracks"]) == 3
-    # The correction was shown to the model, not swallowed.
-    assert "no JSON object" in model.prompts[1]
-
-
-def test_an_unknown_tool_name_is_handed_back_with_the_real_vocabulary(
-    monkeypatch, signed_in
-):
-    connect(monkeypatch, Spotify({LIVE_QUERY: GRUNGE}))
-    model = Scripted(
-        call("spotify_search", query=LIVE_QUERY),
-        call("search", query=LIVE_QUERY, type="track", limit=10),
-        call("create_playlist", name="Flannel", tracks=uris(3)),
-        call("finish", summary="done"),
-    )
-
-    result = do(BRIEF, intelligence=model)
-
-    observation = result["actions"][0]["observation"]
-    assert observation["error"] == "unknown_tool"
-    for tool in TOOLS:
-        assert tool in observation["message"]
+    assert named.code == expected
+    assert named.code in do_module.NAMED_IN_REFUSALS
+    assert named.message == "the engine said so"
+    if expected == "internal_error" and engine_code != "internal_error":
+        assert named.extra["engine_code"] == engine_code
 
 
 def test_a_spotify_refusal_that_is_not_the_models_fault_reaches_the_caller(

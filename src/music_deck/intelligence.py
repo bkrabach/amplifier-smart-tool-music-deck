@@ -26,17 +26,27 @@ missing precondition -- rather than an authentication error thrown from deep
 inside a provider module after a prompt was assembled, or worse, a quiet
 fallback to a deterministic answer.
 
-**A turn is text in, text out -- by construction, not by housekeeping.** The
-shipped implementation builds an agent with no tools, no skills, no MCP servers
-and **no approvals channel**. The library's own rule (its
-``docs/concepts/approvals.md``: "approvals absent -> there is no channel") is
-that a consequential action then fails ``approval_unavailable`` rather than
-proceeding; nothing is ever inferred to be allowed. So "the model cannot read,
-write, or fetch anything" is the library's documented default rather than a
-list of things music-deck remembered to switch off -- which matters here more
-than in most tools, because ``boundary.v1`` Core 2 forbids Spotify content
-reaching a model at all, and a model holding a fetch tool could pull in exactly
-what that clause forbids handing it.
+**A turn carries exactly the tools the caller declared, and nothing else.**
+``ModelRequest.tools`` decides the shape of the turn. Empty -- what ``plan``
+sends -- builds an agent with no tools, no skills, no MCP servers and **no
+approvals channel**, which is text in and text out by construction: the
+library's own rule (its ``docs/concepts/approvals.md``: "approvals absent ->
+there is no channel") is that a tool effect then fails ``approval_unavailable``
+rather than proceeding, so nothing is ever inferred to be allowed.
+
+Non-empty -- what ``do`` sends -- turns each :class:`ToolSpec` into an engine
+``Tool`` whose handler runs *here*, against music-deck's own library functions.
+That is not decoration: on 2026-09-06 a real model, handed a prompt that merely
+*described* tools, made a native tool call, and the engine refused the turn --
+``provider_failed``, "The provider requested an undeclared tool". A tool a model
+is told about must be a tool the engine was told about.
+
+Declaring one forces the approvals question, because the engine asks its
+authority before every call and answers ``"unavailable"`` when there is none.
+:func:`_static_approval_policy` is the answer and carries the reasoning,
+including the measured reason a bare ``approvals="allow"`` is unsafe: the engine
+registers its own built-ins -- ``bash``, ``write``, ``web_fetch`` and the rest --
+alongside the caller's, so "allow" is far wider than "allow music-deck's tools".
 
 **A turn is decided here, not by the caller's shell.** The engine resolves its
 configuration from the process environment and refuses a turn over anything it
@@ -47,11 +57,12 @@ forbids. music-deck honours none of that namespace and withholds all of it for
 the length of the turn; :data:`HOST_SETTING_PREFIX` carries the decision, the
 measurements behind it, and why nothing is exempted.
 
-An explicit ``approvals="deny"`` was considered as a second line of defence and
-deliberately not used: it is not equivalent (it ends a turn at its first tool
-request with ``approval_denied`` rather than ``approval_unavailable``), so it
-would change observable behaviour while adding no safety the absent channel does
-not already give. Fewer moving parts, one documented guarantee.
+An explicit ``approvals="deny"`` was considered for the no-tools shape as a
+second line of defence and deliberately not used: it is not equivalent (it ends
+a turn at its first tool request with ``approval_denied`` rather than
+``approval_unavailable``), so it would change observable behaviour while adding
+no safety the absent channel does not already give. Fewer moving parts, one
+documented guarantee.
 """
 
 from __future__ import annotations
@@ -251,6 +262,48 @@ def without_host_settings() -> Iterator[tuple[str, ...]]:
 # --------------------------------------------------------------------------- #
 # What crosses the seam
 # --------------------------------------------------------------------------- #
+class ToolStop(Exception):
+    """A caller's tool asking for the turn to end now, with no further calls.
+
+    The seam's own vocabulary, not the engine's, so a verb can end a turn --
+    a ceiling reached, a refusal that is not the model's to correct -- without
+    importing ``amplifier_agent``. ``cli.v1`` Core 2 keeps that import inside
+    :meth:`AmplifierIntelligence.run_async`; a sentinel declared here is what
+    lets ``music_deck.verbs.do`` raise one from a handler anyway.
+
+    :meth:`AmplifierIntelligence.run_async` translates it into the library's
+    ``ToolFailed``, which with ``tool_error_policy="stop"`` ends the turn
+    instead of handing the model something to correct. The verb that raised it
+    already recorded *why*, and publishes that reason rather than the engine's.
+    """
+
+
+@dataclass(frozen=True)
+class ToolSpec:
+    """One tool a verb offers the model, in music-deck's own terms.
+
+    Deliberately not ``amplifier_agent.Tool``: a capability declares what it can
+    do without importing the engine (``cli.v1`` Core 2), and a test double can
+    drive these handlers directly without one either.
+    :meth:`AmplifierIntelligence.run_async` is the single place this becomes an
+    engine ``Tool``.
+
+    ``handler`` is **synchronous** and returns the string the model will see.
+    music-deck's library functions are synchronous and one tool runs at a time,
+    so there is nothing for an async handler to overlap with; the adapter awaits
+    a thin wrapper around this. It may raise :class:`ToolStop` to end the turn.
+
+    ``input_schema`` is JSON Schema draft 2020-12 with ``additionalProperties:
+    False`` -- the engine validates it when the agent is built, so a malformed
+    schema fails loudly at boot rather than as a confusing provider error.
+    """
+
+    name: str
+    description: str
+    input_schema: dict[str, Any]
+    handler: Any
+
+
 @dataclass(frozen=True)
 class ModelRequest:
     """One fully assembled prompt, and how the caller wants it answered.
@@ -258,11 +311,18 @@ class ModelRequest:
     The prompt arrives assembled. Nothing below this line adds a word to it --
     which is what lets ``boundary.v1`` Core 3's transcript be the whole truth
     about what was sent.
+
+    ``tools``, when non-empty, is what makes the turn agentic: the engine offers
+    them to the provider, the provider calls them **natively**, and the handlers
+    run here in music-deck's own process. Empty (the default, and what ``plan``
+    sends) leaves the turn exactly what it always was -- text in, text out, no
+    tools, no approvals channel.
     """
 
     prompt: str
     provider: str | None = None
     model: str | None = None
+    tools: tuple[ToolSpec, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -391,6 +451,100 @@ def available_providers() -> list[str]:
 
 
 # --------------------------------------------------------------------------- #
+# Tools -- the caller's, translated once, here
+# --------------------------------------------------------------------------- #
+def _engine_tools(specs: tuple[ToolSpec, ...]) -> list[Any]:
+    """Every :class:`ToolSpec` as the engine's own ``Tool``.
+
+    The one place ``amplifier_agent.Tool`` is constructed. A verb declares what
+    it can do in music-deck's terms and never learns the engine's, which is what
+    keeps ``cli.v1`` Core 2's lazy-import promise honest for the other forty
+    verbs and what lets a test double drive the same handlers with no engine
+    installed at all.
+
+    The handler is wrapped rather than passed through for one reason:
+    :class:`ToolStop` has to become the library's ``ToolFailed``, which under
+    ``tool_error_policy="stop"`` ends the turn instead of handing the model
+    something to work around. Every other outcome -- including a refusal the
+    model *should* correct -- comes back as the handler's own returned string.
+    """
+    from amplifier_agent import Tool, ToolFailed
+
+    def adapt(spec: ToolSpec) -> Any:
+        async def handler(arguments: dict[str, Any], context: Any) -> str:
+            try:
+                return spec.handler(dict(arguments))
+            except ToolStop as stop:
+                raise ToolFailed(str(stop)) from None
+
+        return Tool(
+            name=spec.name,
+            description=spec.description,
+            input_schema=dict(spec.input_schema),
+            handler=handler,
+        )
+
+    return [adapt(spec) for spec in specs]
+
+
+# --------------------------------------------------------------------------- #
+# Approvals -- static, deterministic, and an allow-list rather than "allow"
+# --------------------------------------------------------------------------- #
+def _static_approval_policy(declared: tuple[str, ...]) -> Any:
+    """Allow exactly the tools music-deck declared; deny everything else.
+
+    **Why a policy is required at all.** The engine asks its approvals authority
+    before every tool call, and with none configured the decision is
+    ``"unavailable"`` -- the effect fails ``approval_unavailable`` and the turn
+    stops. That is the right default for ``plan``, which offers no tools. The
+    moment ``do`` declares one, a policy has to be chosen or nothing can run.
+
+    **Why static.** ``do`` is non-interactive: there is no human at the other
+    end of a prompt, so there is nobody an approval could be put to. This
+    handler asks nothing, reads nothing, and does no I/O -- it is a pure
+    function of the tool's name, and the same call always gets the same answer.
+    A "static policy" in every sense that matters; it is spelled as a handler
+    only because the two literals the library offers are both wrong here.
+
+    **Why not the literal ``approvals="allow"``.** Because it would not mean
+    "allow music-deck's six tools". Measured against the installed engine on
+    2026-09-06: ``prepare_tools`` registers music-deck's caller tools **and its
+    own built-ins** -- ``read``, ``write``, ``edit``, ``glob``, ``grep``,
+    ``web_fetch``, ``web_search``, ``bash`` and ``delegate`` -- and offers all of
+    them to the provider. A blanket ``"allow"`` therefore hands a shell and a
+    filesystem on the caller's machine to a model that was asked to make a
+    playlist. Until ``do`` declared its first tool, none of that was reachable:
+    with no approvals channel every one of those built-ins failed closed, which
+    is the property this repository has been describing all along. An allow-list
+    is what keeps that property true now that a channel exists.
+
+    **Why not ``"deny"``.** It denies music-deck's own tools too, so ``do``
+    could never run a search.
+
+    A denial ends the turn with the library's ``approval_denied``; the caller
+    sees a named refusal (``music_deck.verbs.do`` maps it onto
+    ``refusals.v1``'s closed vocabulary), never a traceback and never a silent
+    execution.
+    """
+    allowed = frozenset(declared)
+
+    async def decide(request: Any) -> Any:
+        from amplifier_agent import ApprovalResponse
+
+        if request.name in allowed:
+            return ApprovalResponse("allow")
+        return ApprovalResponse(
+            "deny",
+            reason=(
+                f"music-deck declared {sorted(allowed)} and allows nothing else. "
+                f"{request.name!r} is not one of them."
+            ),
+        )
+
+    return decide
+
+
+# --------------------------------------------------------------------------- #
 # The shipped implementation
 # --------------------------------------------------------------------------- #
 class AmplifierIntelligence:
@@ -510,13 +664,30 @@ class AmplifierIntelligence:
     async def run_async(self, request: ModelRequest) -> ModelResult:
         """One turn through the engine library's documented public API.
 
-        Everything the boundary depends on is visible in the ``AgentOptions``
-        below: no ``tools``, no ``skills``, no ``mcp_servers``, and no
+        Two shapes, and which one runs is decided by ``request.tools``.
+
+        **No tools** -- what ``plan`` sends, and what this method did until
+        2026-09-06. No ``tools``, no ``skills``, no ``mcp_servers`` and no
         ``approvals``. Those are the library's defaults, and its approvals rule
-        makes them fail-closed -- with no channel, a consequential action fails
+        makes them fail-closed: with no channel, a tool effect fails
         ``approval_unavailable`` instead of proceeding. music-deck strips
-        nothing and overrides nothing to get that; it simply asks for an agent
-        that has nothing to reach with.
+        nothing and overrides nothing to get that; it asks for an agent that has
+        nothing to reach with.
+
+        **With tools** -- what ``do`` sends. The engine offers them to the
+        provider, the provider calls them natively, and each handler runs here
+        in this process against music-deck's own library functions. This exists
+        because the alternative *did not work*: describing tools in the prompt
+        and asking for JSON text back was refused on the first live invocation
+        with ``provider_failed`` -- "The provider requested an undeclared tool"
+        -- because a real model, handed a prompt describing tools, makes a
+        native tool call. 655 tests passed over that defect, every one of them
+        through a double that answered in the JSON the loop expected.
+
+        Declaring tools forces the approvals question, and the answer is
+        :func:`_static_approval_policy`. Read its docstring before changing
+        anything here: a bare ``approvals="allow"`` is **not** equivalent, and
+        is not safe.
         """
         import tempfile
 
@@ -536,6 +707,15 @@ class AmplifierIntelligence:
             create_agent,
         )
 
+        # Narrower still, and deliberately: a turn with no tools imports exactly
+        # the six names it always did. `plan` is unchanged down to its imports.
+        tools = _engine_tools(request.tools) if request.tools else None
+        approvals = (
+            _static_approval_policy(tuple(spec.name for spec in request.tools))
+            if request.tools
+            else None
+        )
+
         # boundary.v1 Core 8 forbids a persistent store, and the library writes
         # durable transcripts under a storage root it picks (`~/.amplifier-agent`
         # by default). An ephemeral session writes nothing there -- measured --
@@ -552,7 +732,21 @@ class AmplifierIntelligence:
             tempfile.TemporaryDirectory(prefix="music-deck-agent-") as storage,
             without_host_settings(),
         ):
-            options = AgentOptions(provider=provider, model=model, storage=storage)
+            options = AgentOptions(
+                provider=provider,
+                model=model,
+                storage=storage,
+                tools=tools,
+                approvals=approvals,
+                # Explicit although it is the default. A recoverable mistake --
+                # a bad argument, an empty result -- is handed back to the model
+                # by a handler *returning* an observation, never by raising; the
+                # only thing that raises is ToolStop, and that must end the turn
+                # rather than be worked around. "continue" would let a model
+                # loop forever against a ceiling it has already hit, on an
+                # engine whose own iteration cap is -1.
+                tool_error_policy="stop",
+            )
             try:
                 agent = await create_agent(options)
             except AgentError as failure:
@@ -714,6 +908,8 @@ __all__ = [
     "default_intelligence",
     "engine_installed",
     "missing_package",
+    "ToolSpec",
+    "ToolStop",
     "resolve",
     "without_host_settings",
 ]

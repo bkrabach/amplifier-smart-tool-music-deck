@@ -9,7 +9,17 @@ depending on. So ``run`` appends ``request.prompt`` -- the same string object
 handed across the seam -- before it does anything else.
 
 ``Scripted`` -- replies from a script, so a model-backed path runs end to end
-with no provider configured and no tokens spent.
+with no provider configured and no tokens spent. When the request carries tools
+it drives them for real, the way a tool-calling model would: read the reply,
+call the handler, answer from what came back.
+
+**What a double can and cannot prove.** These three run music-deck's own code
+end to end for nothing. What they cannot prove is what a *provider* does with a
+prompt, and on 2026-09-06 that gap cost a shipped defect: 655 tests passed over
+a verb that described its tools in prose and never declared them, because every
+double answered in exactly the JSON the verb hoped for. A real model made a
+native tool call and the engine refused the turn. ``tests/test_do_live.py`` is
+the test that closes that gap, and no double replaces it.
 
 ``Unconfigured`` -- refuses in ``preflight`` and **fails loudly if ``run`` is
 ever reached**. That failure is the proof of ``cli.v1`` Core 3's "refuses before
@@ -36,13 +46,18 @@ without anybody handling a real credential to prove the check works.
 
 from __future__ import annotations
 
+import json
+import re
 from typing import Any, Final
 
+from music_deck.errors import MusicDeckError
 from music_deck.intelligence import (
     MISSING_PROVIDER,
     ModelRequest,
     ModelResult,
     NoModelSubstrate,
+    ToolSpec,
+    ToolStop,
 )
 from music_deck.prompts import plan_prompt_parts
 
@@ -118,8 +133,72 @@ def credential_leak_prompt(brief: str, credential: str = FAKE_ACCESS_TOKEN) -> s
     )
 
 
+# --------------------------------------------------------------------------- #
+# Standing in for a model that calls tools
+# --------------------------------------------------------------------------- #
+_FENCE_RE: Final = re.compile(r"```(?:json)?\s*\n(.*?)```", re.DOTALL)
+
+
+def tool_call_in(reply: str) -> tuple[str, dict[str, Any]] | None:
+    """The ``{"tool": ..., "arguments": {...}}`` in a scripted reply, or ``None``.
+
+    A script writes what a model *would call*; this is what turns that into an
+    actual call. ``None`` means the reply is the model's final text, which is
+    how a turn ends.
+
+    Scripts stayed in this shape across the 2026-09-06 change from a JSON-text
+    protocol to native tool calls, on purpose: the shape a test *writes* is not
+    the thing that was wrong. What was wrong was that the shipped verb parsed it
+    out of a reply instead of declaring tools, so a real model never produced
+    it. That parsing now lives here, in the doubles, where it belongs -- and
+    ``tests/test_do_live.py`` is what proves a real provider does the other
+    thing.
+    """
+    document = _object_in(reply)
+    if document is None:
+        return None
+    name = document.get("tool")
+    if not isinstance(name, str) or not name.strip():
+        return None
+    arguments = document.get("arguments") or {}
+    return name.strip(), dict(arguments) if isinstance(arguments, dict) else {}
+
+
+def _object_in(reply: str) -> dict[str, Any] | None:
+    for candidate in reversed(_FENCE_RE.findall(reply or "")):
+        loaded = _load(candidate)
+        if loaded is not None:
+            return loaded
+    start = (reply or "").find("{")
+    end = (reply or "").rfind("}")
+    if start != -1 and end > start:
+        return _load(reply[start : end + 1])
+    return None
+
+
+def _load(text: str) -> dict[str, Any] | None:
+    try:
+        loaded = json.loads(text)
+    except ValueError:
+        return None
+    return loaded if isinstance(loaded, dict) else None
+
+
 class Recording:
-    """Records every prompt verbatim as it is sent, and replies from a script."""
+    """Records every prompt verbatim as it is sent, and replies from a script.
+
+    When the request carries tools it also **behaves like a tool-calling
+    model**: it reads each scripted reply, calls the matching handler for real,
+    and asks itself for the next reply given what came back. That loop is the
+    part a double must reproduce faithfully, because it is where the engine
+    would otherwise be doing the work -- including the two ways a real turn
+    ends badly, both reproduced here as the codes the engine actually raises:
+
+    * a tool the caller never declared -> ``provider_failed``, which is verbatim
+      what the engine raised on the first live ``do`` invocation.
+    * a handler raising :class:`ToolStop` -> ``tool_failed``, the turn ended by
+      music-deck itself, which is how a ceiling binds.
+    """
 
     implementation = "recording"
 
@@ -128,17 +207,30 @@ class Recording:
         self.prompts: list[str] = []
         self.requests: list[ModelRequest] = []
         self.preflight_calls: list[str | None] = []
+        #: Every string a handler handed back, in order -- the double's own
+        #: record of what it was shown, independent of what the verb published.
+        self.observed: list[str] = []
 
     def preflight(self, provider: str | None = None) -> str:
         self.preflight_calls.append(provider)
         return provider or "recording"
+
+    def next_reply(self, last_result: str | None) -> str:
+        """The next thing this model says. Scripted; ``last_result`` ignored.
+
+        The hook a reactive double overrides to answer from what it was just
+        shown rather than from a list.
+        """
+        return self.replies.pop(0) if self.replies else ""
 
     def run(self, request: ModelRequest) -> ModelResult:
         # First line of the method, before anything else can touch it: the
         # transcript is what was sent, not a reconstruction of it.
         self.prompts.append(request.prompt)
         self.requests.append(request)
-        reply = self.replies.pop(0) if self.replies else ""
+        reply = self.next_reply(None)
+        if request.tools:
+            reply = self._drive(request.tools, reply)
         return ModelResult(
             text=reply,
             provider="recording",
@@ -146,6 +238,35 @@ class Recording:
             tokens_in=len(request.prompt) // 4,
             tokens_out=len(reply) // 4,
         )
+
+    def _drive(self, tools: tuple[ToolSpec, ...], reply: str) -> str:
+        """Call tools until the model answers with text instead of a call."""
+        by_name = {spec.name: spec for spec in tools}
+        while True:
+            call = tool_call_in(reply)
+            if call is None:
+                return reply
+            name, arguments = call
+            spec = by_name.get(name)
+            if spec is None:
+                raise MusicDeckError(
+                    "provider_failed",
+                    f"The agent engine refused to run a turn: The provider "
+                    f"requested an undeclared tool.",
+                    "Configure the requested tool or correct the provider "
+                    "response.",
+                    tool=name,
+                )
+            try:
+                result = spec.handler(arguments)
+            except ToolStop as stop:
+                raise MusicDeckError(
+                    "tool_failed",
+                    f"The agent engine refused to run a turn: {stop}",
+                    "Correct the reported tool failure before trying again.",
+                ) from None
+            self.observed.append(result)
+            reply = self.next_reply(result)
 
 
 class Scripted(Recording):
@@ -196,4 +317,5 @@ __all__ = [
     "Scripted",
     "Unconfigured",
     "credential_leak_prompt",
+    "tool_call_in",
 ]
