@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import re
 import subprocess
 import sys
@@ -131,6 +132,12 @@ class Ledger:
     storage_contents: list[list[str]] = field(default_factory=list)
     closed_agents: int = 0
     closed_sessions: int = 0
+    #: ``os.environ`` as the engine would have read it, once per call that reads
+    #: it. The real engine resolves its configuration from the *process*
+    #: environment rather than from the options it is handed, so what was in
+    #: there at that instant is the whole input to that decision -- and the only
+    #: place a host setting could have reached it.
+    host_settings_seen: list[dict[str, str]] = field(default_factory=list)
 
 
 class FakeSession:
@@ -141,6 +148,7 @@ class FakeSession:
 
     async def run(self, turn_input: FakeTurnInput) -> Any:
         self._ledger.turn_inputs.append(turn_input)
+        self._ledger.host_settings_seen.append(_host_settings_now())
         if self._raise is not None:
             raise self._raise
         return self._result
@@ -169,12 +177,71 @@ class FakeAgent:
         self._ledger.closed_agents += 1
 
 
+# --------------------------------------------------------------------------- #
+# The host-settings namespace, as the real engine treats it
+# --------------------------------------------------------------------------- #
+HOST_PREFIX = intel.HOST_SETTING_PREFIX
+
+#: The suffixes the engine registers. Read out of the installed engine's own
+#: ``_engine/configuration.py`` on 2026-09-06; anything else under the prefix is
+#: refused before a turn starts, which is the whole defect.
+REGISTERED_SUFFIXES = frozenset({"PROVIDER", "MODEL", "STORAGE", "WORKSPACE", "CONFIG"})
+REGISTERED_PREFIXES = ("FACE_", "ENGINE_", "NODE_")
+
+
+def _host_settings_now() -> dict[str, str]:
+    """Every ``AMPLIFIER_AGENT_*`` variable visible in this process right now."""
+    return {
+        name: value
+        for name, value in os.environ.items()
+        if name.startswith(HOST_PREFIX)
+    }
+
+
+def _refuse_unregistered_host_settings() -> None:
+    """Refuse a turn exactly as the installed engine does, and for its reasons.
+
+    Two of the three measured refusals, reproduced from the engine's own
+    ``configuration.resolve``:
+
+    * ``AMPLIFIER_AGENT_CONFIG`` naming a file that does not exist -- ``config:
+      the configured file does not exist.``
+    * any variable under the prefix whose suffix is unregistered --
+      ``unregistered host environment setting.``
+
+    Reproduced rather than imported because the engine is not installed in the
+    development environment at all (``cli.v1`` Core 2 -- the deterministic verbs
+    pay for no part of the model stack), so there is nothing to import. The
+    price of that is a copy that can date; the guard against it is
+    :func:`test_the_refusal_this_file_reproduces_is_the_engines_own`, which
+    checks the copy against the installed engine wherever one exists.
+    """
+    settings = _host_settings_now()
+    config = settings.get(f"{HOST_PREFIX}CONFIG")
+    if config is not None and not Path(config).expanduser().exists():
+        raise FakeAgentError(
+            "invalid_input",
+            "config: the configured file does not exist.",
+            f"Create the configuration file or remove {HOST_PREFIX}CONFIG.",
+        )
+    for name in settings:
+        suffix = name.removeprefix(HOST_PREFIX)
+        if suffix in REGISTERED_SUFFIXES or suffix.startswith(REGISTERED_PREFIXES):
+            continue
+        raise FakeAgentError(
+            "invalid_input",
+            f"{name}: unregistered host environment setting.",
+            f"Remove {name}.",
+        )
+
+
 def install_fake_engine(
     monkeypatch,
     *,
     result: Any | None = None,
     raise_on_create: Exception | None = None,
     raise_on_run: Exception | None = None,
+    refuse_host_settings: bool = False,
 ) -> Ledger:
     """Put a recording stand-in at ``sys.modules["amplifier_agent"]``.
 
@@ -192,6 +259,9 @@ def install_fake_engine(
 
     async def create_agent(options: FakeAgentOptions) -> FakeAgent:
         ledger.agent_options.append(options)
+        ledger.host_settings_seen.append(_host_settings_now())
+        if refuse_host_settings:
+            _refuse_unregistered_host_settings()
         storage = Path(str(options.storage)) if options.storage is not None else None
         ledger.storage_existed.append(bool(storage and storage.is_dir()))
         ledger.storage_contents.append(
@@ -264,6 +334,135 @@ def test_the_agent_and_the_session_are_both_closed(monkeypatch):
 
     assert ledger.closed_agents == 1
     assert ledger.closed_sessions == 1
+
+
+# --------------------------------------------------------------------------- #
+# The caller's shell does not get a vote -- MD-14 defect 1
+#
+# Measured on the steward's machine on 2026-09-06: their shell sets
+# ``AMPLIFIER_AGENT_CONFIG`` for Amplifier, and every ``music-deck plan`` run in
+# it exited 1 with ``invalid_input`` and "unregistered host setting"; the same
+# command under ``env -u AMPLIFIER_AGENT_CONFIG`` exited 0. The variable is not
+# music-deck's, is named nowhere in its manifest, and was breaking a verb.
+#
+# Every test below sets the variable for real (``monkeypatch.setenv``) and lets
+# the stand-in refuse exactly as the installed engine does. Asserting the scrub
+# by reading the boot code would prove only that a line exists.
+# --------------------------------------------------------------------------- #
+CONFIG_VAR = f"{HOST_PREFIX}CONFIG"
+
+
+def test_a_host_config_setting_pointing_nowhere_does_not_fail_the_turn(
+    monkeypatch, tmp_path
+):
+    """The steward's exact case: the turn runs, and the engine never sees it."""
+    ledger = install_fake_engine(monkeypatch, refuse_host_settings=True)
+    missing = tmp_path / "no-such-config.json"
+    monkeypatch.setenv(CONFIG_VAR, str(missing))
+    assert not missing.exists()
+
+    answer = intel.AmplifierIntelligence().run(intel.ModelRequest(prompt=PROMPT))
+
+    assert answer.text == "a reply"
+    assert ledger.host_settings_seen == [{}, {}], (
+        "a host setting reached the engine: it reads the process environment, "
+        f"and saw {ledger.host_settings_seen}"
+    )
+
+
+def test_the_turn_runs_the_same_way_with_no_host_setting_at_all(monkeypatch):
+    """The fix does not depend on the variable being there to be removed."""
+    ledger = install_fake_engine(monkeypatch, refuse_host_settings=True)
+    monkeypatch.delenv(CONFIG_VAR, raising=False)
+
+    answer = intel.AmplifierIntelligence().run(intel.ModelRequest(prompt=PROMPT))
+
+    assert answer.text == "a reply"
+    assert ledger.host_settings_seen == [{}, {}]
+
+
+def test_the_whole_namespace_is_withheld_not_only_the_one_that_bit(monkeypatch):
+    """Registered and unregistered alike -- music-deck honours none of them.
+
+    ``AMPLIFIER_AGENT_STORAGE`` is the one that matters beyond tidiness: it moves
+    the engine's storage root, and ``boundary.v1`` Core 8 forbids a persistent
+    store. Left standing, a variable in the caller's shell would decide where
+    the transcript lands, and the temporary directory this file checks
+    elsewhere would stop meaning anything.
+    """
+    ledger = install_fake_engine(monkeypatch, refuse_host_settings=True)
+    for name, value in {
+        CONFIG_VAR: "/nowhere/at/all.json",
+        f"{HOST_PREFIX}STORAGE": "/tmp/somewhere-durable",
+        f"{HOST_PREFIX}WORKSPACE": "NOT A VALID SLUG",
+        f"{HOST_PREFIX}PROVIDER": "some-other-provider",
+        f"{HOST_PREFIX}TELEMETRY": "1",
+    }.items():
+        monkeypatch.setenv(name, value)
+
+    answer = intel.AmplifierIntelligence().run(intel.ModelRequest(prompt=PROMPT))
+
+    assert answer.text == "a reply"
+    assert ledger.host_settings_seen == [{}, {}]
+    # The storage root the engine was handed is still music-deck's own.
+    [storage] = [options.storage for options in ledger.agent_options]
+    assert "/tmp/somewhere-durable" not in str(storage)
+    assert "music-deck-agent-" in str(storage)
+
+
+def test_the_callers_environment_is_exactly_as_it_was_found_afterwards(monkeypatch):
+    """Withheld for the turn, not taken away: the caller's shell is untouched."""
+    install_fake_engine(monkeypatch, refuse_host_settings=True)
+    monkeypatch.setenv(CONFIG_VAR, "/nowhere/at/all.json")
+    monkeypatch.setenv(f"{HOST_PREFIX}TELEMETRY", "1")
+    before = _host_settings_now()
+
+    intel.AmplifierIntelligence().run(intel.ModelRequest(prompt=PROMPT))
+
+    assert _host_settings_now() == before
+
+
+def test_a_turn_that_fails_still_puts_the_environment_back(monkeypatch):
+    """A refusal must not be paid for twice, once in the answer and once in the shell."""
+    install_fake_engine(
+        monkeypatch,
+        raise_on_run=FakeAgentError("provider_error", "the provider said no.", "Try again."),
+    )
+    monkeypatch.setenv(CONFIG_VAR, "/nowhere/at/all.json")
+    before = _host_settings_now()
+
+    with pytest.raises(MusicDeckError):
+        intel.AmplifierIntelligence().run(intel.ModelRequest(prompt=PROMPT))
+
+    assert _host_settings_now() == before
+
+
+def test_the_stand_in_engine_refuses_what_the_real_one_refuses(monkeypatch, tmp_path):
+    """The regression guard on the guard.
+
+    Without this, ``refuse_host_settings`` is an assertion nobody has seen fail,
+    and the tests above could go green because the stand-in stopped refusing
+    rather than because music-deck kept scrubbing. Both refusals the installed
+    engine raises are provoked here directly.
+    """
+    monkeypatch.setenv(CONFIG_VAR, str(tmp_path / "absent.json"))
+    with pytest.raises(FakeAgentError) as missing_config:
+        _refuse_unregistered_host_settings()
+    assert "does not exist" in missing_config.value.message
+
+    present = tmp_path / "present.json"
+    present.write_text("{}")
+    monkeypatch.setenv(CONFIG_VAR, str(present))
+    monkeypatch.setenv(f"{HOST_PREFIX}TELEMETRY", "1")
+    with pytest.raises(FakeAgentError) as unregistered:
+        _refuse_unregistered_host_settings()
+    assert "unregistered host environment setting" in unregistered.value.message
+
+    # A registered suffix on its own is not refused -- the rule is about what is
+    # unregistered, not about the prefix existing.
+    monkeypatch.delenv(f"{HOST_PREFIX}TELEMETRY")
+    monkeypatch.setenv(f"{HOST_PREFIX}MODEL", "some-model")
+    _refuse_unregistered_host_settings()
 
 
 # --------------------------------------------------------------------------- #

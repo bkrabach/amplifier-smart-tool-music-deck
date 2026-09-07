@@ -38,6 +38,35 @@ Migration guide, verbatim: "The new ``PUT /me/library`` endpoint accepts Spotify
 URIs instead of IDs, allowing you to save or follow any supported content type
 in a single request." A bare id carries no type, so music-deck refuses one here
 rather than guessing that a 22-character string is a track.
+
+Where the URIs travel: the query string, not a JSON body
+--------------------------------------------------------
+All three ``/me/library`` calls -- ``PUT``, ``DELETE`` and ``GET .../contains``
+-- read ``uris`` from the **query string**. A JSON body carrying the same field
+is not read at all, and the endpoint answers ``400 {"error": {"status": 400,
+"message": "Missing required field: uris"}}``: an error that names the field you
+did send, which reads like a serialization bug and is in fact the wrong
+transport.
+
+Measured live against ``api.spotify.com`` on 2026-09-06, one account, one empty
+playlist (``spotify:playlist:1uqC0P36Hsm8Bg3rnHj23I``), four requests:
+
+============================================ ======================================
+Request                                      Answer
+============================================ ======================================
+``DELETE /me/library`` body ``{"uris": [_]}`` ``400 Missing required field: uris``
+``DELETE /me/library?uris=<uri>``            ``200``; playlist left ``/me/playlists``
+``PUT /me/library`` body ``{"uris": [_]}``   ``400 Missing required field: uris``
+``PUT /me/library?uris=<uri>``               ``200``; playlist returned to it
+============================================ ======================================
+
+So both writes pass ``uris=`` as a parameter, exactly as ``library contains``
+already did -- ``SpotifyClient._url`` renders a list of URIs comma-separated,
+which is the multi-value form Spotify takes here. This is the whole reason
+``apply`` could create a playlist that nothing in the tool could remove: the
+playlist-follower deletion that used to do it is on ``boundary.v1`` Core 7's
+withdrawn list (``http.py``'s guard holds the literal, so this file does not),
+and ``DELETE /me/library`` is its only replacement.
 """
 
 from __future__ import annotations
@@ -189,16 +218,26 @@ def following(
 def library_save(
     items: Sequence[str], *, client: SpotifyClient | None = None
 ) -> dict[str, Any]:
-    """Save (or follow) items -- ``PUT /me/library``, one request, any types."""
+    """Save (or follow) items -- ``PUT /me/library``, one request, any types.
+
+    ``uris`` goes in the query string. A JSON body is not read: see this
+    module's "Where the URIs travel" table for the four live requests that
+    settle it.
+    """
     uris = _uris(items, "save")
-    _client(client).put(LIBRARY, {"uris": uris})
+    _client(client).put(LIBRARY, uris=uris)
     return {"saved": len(uris), "items": _refs(uris)}
 
 
 def library_remove(
     items: Sequence[str], *, client: SpotifyClient | None = None
 ) -> dict[str, Any]:
-    """Remove (or unfollow) items -- ``DELETE /me/library``."""
+    """Remove (or unfollow) items -- ``DELETE /me/library``.
+
+    ``uris`` goes in the query string, for the same measured reason as
+    :func:`library_save`. This is also the only way to remove a playlist the
+    tool made: the follower endpoint that used to do it is gone.
+    """
     uris = _uris(items, "remove")
-    _client(client).delete(LIBRARY, {"uris": uris})
+    _client(client).delete(LIBRARY, uris=uris)
     return {"removed": len(uris), "items": _refs(uris)}
