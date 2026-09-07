@@ -1191,20 +1191,49 @@ def _artists(item: Mapping[str, Any]) -> list[str]:
     ]
 
 
+_ITEM_WRAPPERS: Final[tuple[str, ...]] = ("item", "track")
+"""The keys a playlist-items entry may hide its object under, in order.
+
+**``item`` is first because that is what Spotify actually sends.** Measured
+against a real account on 2026-09-07, one entry from
+``GET /playlists/{id}/items``::
+
+    {"added_at": "2026-09-07T04:28:01Z", "added_by": {...}, "is_local": false,
+     "item": {"type": "track", "track": true, "episode": false, "uri": ..., ...}}
+
+Note the trap in that payload: there **is** a ``track`` key, and its value is
+the boolean ``true`` -- a discriminator saying "this item is a track", not the
+track. Reading ``entry["track"]`` and finding something truthy is exactly what
+this function used to do, and the result was a read-back that reported an empty
+playlist three seconds after successfully writing three songs to it. Nothing in
+655 tests caught it, because the fixtures wrapped items the way the code
+expected rather than the way Spotify does.
+
+``track`` is still read, second and only when it is a mapping, because the
+repository's own fixtures use it and a future page shape may too. The entry
+itself is the last resort, for a flattened page.
+"""
+
+
 def _tracks_of(items: Sequence[Any]) -> list[dict[str, Any]]:
     """The track objects inside a playlist-items page.
 
-    Spotify wraps each one in ``{"track": {...}}``; a fake, a future shape, or a
-    flattened page may hand the track directly. Both are read rather than one
-    being assumed, because a read-back that silently found nothing would look
-    exactly like a playlist that is genuinely empty.
+    Every wrapper :data:`_ITEM_WRAPPERS` names is tried before falling back to
+    the entry itself, and a non-mapping value under one of those keys is
+    ignored rather than trusted -- because a read-back that silently found
+    nothing looks exactly like a playlist that is genuinely empty, and that is
+    the failure this whole verb exists to stop making.
     """
     tracks: list[dict[str, Any]] = []
     for entry in items:
         if not isinstance(entry, dict):
             continue
-        inner = entry.get("track")
-        track = inner if isinstance(inner, dict) else entry
+        track = entry
+        for wrapper in _ITEM_WRAPPERS:
+            inner = entry.get(wrapper)
+            if isinstance(inner, dict):
+                track = inner
+                break
         if isinstance(track.get("uri"), str):
             tracks.append(track)
     return tracks

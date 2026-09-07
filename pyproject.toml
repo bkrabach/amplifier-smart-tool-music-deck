@@ -49,3 +49,11 @@ packages = ["src/music_deck"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# `live` marks the one test that needs a real provider and a real account
+# (`tests/test_do_live.py`). It skips -- loudly, with the reason -- wherever
+# those are absent, which is everywhere except a deliberate live run. Registered
+# here because a marker cannot be registered from the module that uses it, and
+# an unregistered one is a warning on every single run.
+markers = [
+    "live: needs a real model provider, the engine, and a signed-in Spotify account",
+]
