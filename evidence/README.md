@@ -36,8 +36,11 @@ Substitute the extra for whichever provider you use (`openai`, `gemini`,
 `azure-openai`). `plan` also needs the amplifier-agent engine:
 
 ```
-uv pip install "amplifier-agent @ git+https://github.com/microsoft/amplifier-agent@main"
+uv tool install --force --with "amplifier-agent @ git+https://github.com/microsoft/amplifier-agent@v1#subdirectory=packages/python" git+https://github.com/bkrabach/amplifier-smart-tool-music-deck
 ```
+
+That is the same string `music_deck.intelligence.ENGINE_INSTALL_HINT` prints when
+`plan` refuses, and the script names it from there rather than repeating it.
 
 Then set your own Spotify app's client id and run:
 
@@ -80,8 +83,10 @@ pass:
 4. **It never persists fetched Spotify content.** The record carries counts, the
    plan (which by `plan.v1` Core 5 holds no Spotify content), the prompt
    transcript, and the one playlist the run created. Any other Spotify id, URI
-   or link found in the document refuses the write — `boundary.v1` Core 8's line
-   applied to this script's own output.
+   or link found in the document refuses the write. Since 2026-09-06 that is
+   this script's own line rather than `boundary.v1` Core 8's: Core 8 now lets an
+   artifact the caller asked for carry Spotify content. Held to the stricter
+   rule anyway, because this file gets committed.
 
 ## Checking the gates without an account
 
@@ -92,17 +97,20 @@ uv run python evidence/live_round_trip.py --self-test
 This exercises all four gates against synthetic inputs — no Spotify account, no
 provider, no network. It proves the gates *refuse*: that an empty playlist
 fails, that a leaked credential is caught by name and redacted, that a track URI
-in the document refuses the write, and that a transcript carrying fetched
-Spotify content fails `boundary.v1` Core 2 while a clean one passes.
+in the document refuses the write, and that a transcript carrying the access
+token, the refresh token or the client ID fails `boundary.v1` Core 2 by name —
+while a transcript carrying fetched Spotify search results *passes*, because
+Core 1 permits a model to read what Spotify returns.
 
 It proves nothing whatsoever about Spotify. Only the owner's live run does that.
 
 ## What a completed record proves
 
 - `boundary.v1` kit assert — the live round trip itself.
-- `boundary.v1` Core 2 — the transcript carries no Spotify content, checked with
-  `music_deck.prompt_boundary`, the same cover-based check the library runs
-  against itself.
+- `boundary.v1` Core 2 — the transcript carries no credential: not the access
+  token, the refresh token, or the client ID. Checked with
+  `music_deck.prompt_boundary`, the same check the library runs against itself.
+  What Spotify *returned* may be in there, and Core 3 is why you can see it.
 - `boundary.v1` Core 3 — the transcript is an observable output, reproduced
   verbatim.
 - `cli.v1` Core 4/5/6 — one JSON document per result, and a `partial_result`
