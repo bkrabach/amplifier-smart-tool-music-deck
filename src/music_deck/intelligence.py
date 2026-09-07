@@ -38,6 +38,15 @@ than in most tools, because ``boundary.v1`` Core 2 forbids Spotify content
 reaching a model at all, and a model holding a fetch tool could pull in exactly
 what that clause forbids handing it.
 
+**A turn is decided here, not by the caller's shell.** The engine resolves its
+configuration from the process environment and refuses a turn over anything it
+does not recognise there -- so a variable music-deck neither documents nor uses
+could fail ``plan`` outright, and one of them (``AMPLIFIER_AGENT_STORAGE``)
+could move the transcript somewhere durable that ``boundary.v1`` Core 8
+forbids. music-deck honours none of that namespace and withholds all of it for
+the length of the turn; :data:`HOST_SETTING_PREFIX` carries the decision, the
+measurements behind it, and why nothing is exempted.
+
 An explicit ``approvals="deny"`` was considered as a second line of defence and
 deliberately not used: it is not equivalent (it ends a turn at its first tool
 request with ``approval_denied`` rather than ``approval_unavailable``), so it
@@ -48,9 +57,10 @@ not already give. Fewer moving parts, one documented guarantee.
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any, Final, Protocol
+from typing import Any, Final, Iterator, Protocol
 
 from music_deck.errors import MusicDeckError, NoProviderError
 from music_deck.setup_guide import install_with
@@ -156,6 +166,85 @@ exactly the quiet cost that promise exists to prevent."""
 ENGINE_INSTALL_HINT_PIP: Final = f'uv pip install "{ENGINE_REQUIREMENT}"'
 """The same thing for a copy installed into a virtualenv with pip rather than as
 a uv tool. Offered second: the tool install is the documented method."""
+
+
+# --------------------------------------------------------------------------- #
+# Host settings -- music-deck honours none of them
+# --------------------------------------------------------------------------- #
+HOST_SETTING_PREFIX: Final = "AMPLIFIER_AGENT_"
+"""The engine library's own environment namespace. music-deck reads none of it,
+and -- since :func:`without_host_settings` -- lets none of it reach the engine.
+
+The engine resolves its configuration from the *process* environment, not from
+the ``AgentOptions`` it is handed, and refuses a turn over what it finds there.
+Measured on 2026-09-06 against the installed engine, three separate refusals a
+caller can trip without ever naming music-deck:
+
+* ``AMPLIFIER_AGENT_CONFIG`` pointing at a file that does not exist -- refused
+  ``invalid_input``: "config: the configured file does not exist."
+* ``AMPLIFIER_AGENT_CONFIG`` pointing at a file that *does* exist and holds a
+  key the engine does not register -- refused ``invalid_input``: "unregistered
+  host setting." (The steward's own case: their shell sets this variable for
+  Amplifier, and every ``music-deck plan`` in that shell failed.)
+* Any ``AMPLIFIER_AGENT_*`` variable whose suffix is not one of ``PROVIDER``,
+  ``MODEL``, ``STORAGE``, ``WORKSPACE``, ``CONFIG`` (or a ``FACE_``/``ENGINE_``
+  /``NODE_`` prefix) -- refused ``invalid_input``: "unregistered host
+  environment setting."
+
+**Which of these does music-deck honour? None, deliberately.** Two reasons, and
+the second is a contract:
+
+1. music-deck already names everything it needs at the call -- ``provider``,
+   ``model`` and ``storage`` are passed in ``AgentOptions``, from
+   ``MUSIC_DECK_PROVIDER``/``MUSIC_DECK_MODEL`` and a temporary directory. A
+   host setting could only override or contradict a decision music-deck has
+   already made and documented. ``cli.v1`` Core 4's remedies name the
+   ``MUSIC_DECK_*`` variables; a second, undocumented set of knobs that can
+   silently win is not a feature.
+2. ``AMPLIFIER_AGENT_STORAGE`` sets the engine's storage root, and
+   ``boundary.v1`` Core 8 forbids a persistent store. The temporary directory
+   below is how that clause is kept; a variable in the caller's shell able to
+   move the transcript somewhere durable would quietly break it. Scrubbing is
+   not only about the refusal -- it is how Core 8 stays true in an environment
+   music-deck does not control.
+
+A variable music-deck neither documents nor uses must not be able to fail a
+verb, so the whole namespace is withheld for the duration of the turn and put
+back afterwards."""
+
+
+def _host_settings() -> dict[str, str]:
+    """Every ``AMPLIFIER_AGENT_*`` variable currently in the environment."""
+    return {
+        name: value
+        for name, value in os.environ.items()
+        if name.startswith(HOST_SETTING_PREFIX)
+    }
+
+
+@contextmanager
+def without_host_settings() -> Iterator[tuple[str, ...]]:
+    """Run the block with the engine's whole environment namespace withheld.
+
+    Yields the names that were withheld, in order, so a caller can say what it
+    did. The variables are restored in a ``finally``, so an exception inside the
+    turn -- a refusal from the engine, a keyboard interrupt -- leaves the
+    caller's environment exactly as it was found.
+
+    Narrow on purpose. It withholds one prefix, for the length of one turn, in a
+    process that runs exactly one turn: ``run`` owns its own event loop and
+    ``plan`` is the only verb that gets here. It does not touch provider
+    credentials (``ANTHROPIC_API_KEY`` and its siblings do not carry this
+    prefix), which the engine reads from this same environment at the same
+    moment and must still find.
+    """
+    withheld = _host_settings()
+    for name in withheld:
+        del os.environ[name]
+    try:
+        yield tuple(sorted(withheld))
+    finally:
+        os.environ.update(withheld)
 
 
 
@@ -453,7 +542,16 @@ class AmplifierIntelligence:
         # but "nothing was written to a directory that does not outlive the
         # turn" is a stronger sentence than "nothing was written", and it is the
         # one a reviewer can check without trusting either of us.
-        with tempfile.TemporaryDirectory(prefix="music-deck-agent-") as storage:
+        # The engine reads its configuration from this process's environment,
+        # not from the options below, and refuses a turn over anything it does
+        # not recognise there. music-deck honours no AMPLIFIER_AGENT_* setting
+        # (see HOST_SETTING_PREFIX for the decision and its two reasons), so the
+        # whole namespace is withheld across every call that reads it -- the
+        # build *and* the turn -- and restored the moment this block ends.
+        with (
+            tempfile.TemporaryDirectory(prefix="music-deck-agent-") as storage,
+            without_host_settings(),
+        ):
             options = AgentOptions(provider=provider, model=model, storage=storage)
             try:
                 agent = await create_agent(options)
@@ -547,8 +645,9 @@ def _engine_failure(failure: Any, provider: str, model: str) -> MusicDeckError:
         (
             f"{remedy} music-deck asked for provider {provider!r} and model "
             f"{model!r}; pin either with {PROVIDER_ENV_VAR} and {MODEL_ENV_VAR}. "
-            f"Host settings named AMPLIFIER_AGENT_* are read by the engine "
-            f"itself and can refuse a turn before music-deck sees it."
+            f"Settings named {HOST_SETTING_PREFIX}* in your shell are not "
+            f"involved: music-deck withholds that whole namespace for the turn, "
+            f"so this failure is about the provider or the model, not about them."
         ).strip(),
         provider=provider,
         model=model,
@@ -592,6 +691,7 @@ __all__ = [
     "ENGINE_INSTALL_HINT",
     "ENGINE_PACKAGE",
     "ENGINE_REQUIREMENT",
+    "HOST_SETTING_PREFIX",
     "Intelligence",
     "MISSING_CREDENTIALS",
     "MISSING_ENGINE",
@@ -615,4 +715,5 @@ __all__ = [
     "engine_installed",
     "missing_package",
     "resolve",
+    "without_host_settings",
 ]
