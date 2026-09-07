@@ -80,7 +80,7 @@ DETERMINISTIC_VERBS = (
     "apply",
     "manifest",
 )
-MODEL_BACKED_VERBS = ("plan",)
+MODEL_BACKED_VERBS = ("plan", "do")
 ALL_VERBS = DETERMINISTIC_VERBS + MODEL_BACKED_VERBS
 
 # Verbs whose lane has landed. A built verb no longer answers `not_implemented`,
@@ -90,7 +90,8 @@ ALL_VERBS = DETERMINISTIC_VERBS + MODEL_BACKED_VERBS
 # ~/.local/state/music-deck of whoever runs the suite. Each landing lane adds its
 # verbs here; MD-2 added login, disconnect, whoami; MD-3 added the deterministic
 # Spotify verbs below; MD-4 added plan; MD-5 added apply; MD-7 added `setup`
-# (cli.v1 Core 8). Coverage for them lives in tests/test_setup.py, tests/test_auth.py,
+# (cli.v1 Core 8); MD-13 added `do`. Coverage for them lives in tests/test_setup.py,
+# tests/test_do.py, tests/test_auth.py,
 # tests/test_http_refusals.py, tests/test_disconnect.py, tests/test_apply.py and
 # tests/test_verbs_*.py, which drive them against a temporary state directory and
 # a fake transport.
@@ -102,6 +103,7 @@ IMPLEMENTED_VERBS = (
     "disconnect",
     "whoami",
     "plan",
+    "do",
     "search",
     "track",
     "album",
@@ -209,10 +211,18 @@ def test_complete_help_lists_every_verb_the_contract_names(scratch):
     assert not missing, f"--help does not list: {missing}"
 
 
-def test_complete_help_marks_plan_as_model_backed(scratch):
-    """cli.v1 Core 1: --help says "which verbs are model-backed"."""
+def test_complete_help_marks_the_model_backed_verbs(scratch):
+    """cli.v1 Core 1: --help says "which verbs are model-backed".
+
+    Two of them since MD-13 (2026-09-06): `plan` writes a document without ever
+    reaching Spotify, and `do` runs a bounded loop that reads what Spotify
+    returned. Core 2 turns on whether a verb IS model-backed, not on which one
+    it is, so this asserts the marker on each and the count over the whole
+    listing -- a third one added without a marker fails here.
+    """
     complete = run("--help", cwd=scratch).stdout
-    assert "music-deck plan  (model-backed)" in complete
+    for verb in MODEL_BACKED_VERBS:
+        assert f"music-deck {verb}  (model-backed)" in complete
     assert complete.count("(model-backed)") == len(MODEL_BACKED_VERBS)
 
 
