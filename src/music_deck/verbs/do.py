@@ -77,7 +77,12 @@ from typing import Any, Final, Mapping, Sequence
 
 from music_deck.errors import ErrorCode, MusicDeckError
 from music_deck.http import SpotifyClient
-from music_deck.intelligence import Intelligence, ModelRequest, resolve
+from music_deck.intelligence import (
+    Intelligence,
+    ModelRequest,
+    NoModelSubstrate,
+    resolve,
+)
 from music_deck.prompt_boundary import check_plan_transcript
 from music_deck.prompts import do_prompt_parts
 from music_deck.verbs import catalog, playlists
@@ -268,7 +273,7 @@ def do(
 
     # cli.v1 Core 3: the refusal happens here, before any prompt exists.
     # Nothing above this line has assembled a character of prompt.
-    engine.preflight(provider)
+    _preflight(engine, provider)
 
     run = _Run(brief, turn_ceiling, request_ceiling, client)
     return run.execute(engine, provider=provider, model=model)
@@ -758,6 +763,36 @@ class _Run:
             stopped_by=self.stopped_by,
             result=dict(result),
         )
+
+
+# --------------------------------------------------------------------------- #
+# cli.v1 Core 3 -- the refusal, naming the verb the caller actually ran
+# --------------------------------------------------------------------------- #
+def _preflight(engine: Intelligence, provider: str | None) -> None:
+    """Establish a usable substrate, or refuse naming ``do``.
+
+    ``intelligence.preflight``'s own message still says "``plan`` is
+    model-backed and no model provider is configured" -- it was written when
+    ``plan`` was the only one, which ``cli.v1`` Cores 2-3 stopped saying at
+    ``b3ac378``. Measured against an installed copy on 2026-09-06: ``music-deck
+    do`` with no provider exits 3 correctly, and tells the caller about a verb
+    they did not run.
+
+    ``intelligence.py`` belongs to another lane this round, so the correction
+    lives here and touches only the sentence: the code, the ``missing``
+    precondition and the remedy are the ones the seam produced. The day that
+    message stops naming a verb, this becomes a no-op on its own -- the
+    substitution only fires when the message names ``plan``.
+    """
+    try:
+        engine.preflight(provider)
+    except NoModelSubstrate as refusal:
+        corrected = refusal.message.replace("`plan`", "`do`")
+        if corrected == refusal.message:
+            raise
+        raise NoModelSubstrate(
+            refusal.missing, corrected, refusal.remedy
+        ) from refusal
 
 
 # --------------------------------------------------------------------------- #

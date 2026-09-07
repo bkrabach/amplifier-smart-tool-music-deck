@@ -724,6 +724,13 @@ def test_do_with_no_provider_exits_three_and_builds_no_prompt(
     assert document["error"]["code"] == "no_provider_configured"
     assert document["error"]["missing"] == "provider"
     assert unconfigured.run_calls == []
+    # And it names the verb the caller actually ran. The seam's own message
+    # still says `plan` -- it was written when `plan` was the only model-backed
+    # verb -- and a refusal that tells a caller about a verb they did not run
+    # is a refusal they cannot act on. Measured against an installed copy
+    # before it was corrected; see `do._preflight`.
+    assert "`do`" in document["error"]["message"]
+    assert "`plan`" not in document["error"]["message"]
 
 
 def test_an_empty_brief_is_usage_and_never_reaches_a_model(monkeypatch, capsys):
