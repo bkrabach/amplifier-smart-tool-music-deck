@@ -7,21 +7,23 @@ whether music-deck is safe to point at a real account.
 
 ## Purpose
 
-Spotify's Developer Policy §III and Developer Terms §IV forbid ingesting
-Spotify content into an AI model. This contract is how music-deck keeps its
-owner on the right side of that line — not by trusting good intentions, but
-by making the boundary something a reviewer can check.
+Spotify's Developer Policy §III says: *"Do not ... otherwise ingest Spotify
+Content into a machine learning or AI model."* **music-deck does that,
+knowingly** — its model reads what Spotify returns, and the owner accepts the
+revocation risk §VII names. This contract no longer prevents that; it makes
+what crosses into a prompt checkable, and holds what is still promised.
 
 ## Core (the teeth)
 
-1. **`plan` performs no Spotify Web API request.** It succeeds with no
-   network reachability to `api.spotify.com` at all.
-2. **Every prompt sent to a model consists solely of the caller's own text and
-   music-deck's own static schema and prompt text.** No Spotify response, no
-   cache, no token, and no data from a prior run ever enters a prompt.
-3. **The prompt transcript is an observable output of `plan`.** The result
-   document carries `transcript` — the verbatim text of every prompt sent —
-   so a caller or reviewer can verify clause 2 without reading code.
+1. **A model may read what Spotify returns.** Search results and the caller's
+   own playlists may enter a prompt, so the model can correct its own aim
+   instead of guessing blind. This is the clause that breaches §III.
+2. **No credential ever enters a prompt.** Not the access token, the refresh
+   token, or the client ID — not in text, not in a tool result, not in a
+   retry. A model that can read Spotify still never reads the keys to it.
+3. **The prompt transcript is an observable output.** The result document
+   carries `transcript` — every prompt sent, verbatim — so a reviewer sees what
+   crossed without reading code. Clause 1 makes this load-bearing.
 4. **Auth is PKCE only, with the caller's own client ID.** The redirect URI is
    a loopback IP literal on a **fixed, registered port** — `http://127.0.0.1:8888`
    by default, never `localhost` — and `login` binds exactly the port the caller
@@ -47,36 +49,35 @@ by making the boundary something a reviewer can check.
    the type-specific `/me/<type>` library and follow/contains endpoints.
    </details>
 8. **No persistent store of Spotify content.** The only things that persist
-   are the token, the config file, and plan/transcript artifacts — which, by
-   clause 2, contain no Spotify content. Any response caching is in-memory or
-   temp-dir, temporary, and strictly necessary.
+   are the token, the config file, and artifacts the caller asked for — which
+   under clause 1 may now carry Spotify content, and are still written only
+   where the caller pointed. Caching stays in-memory or temp-dir, temporary,
+   and strictly necessary: nothing accumulates for later analysis.
 
 ## What v1 deliberately does NOT freeze
 
-- A `diagnose` verb over the tool's own operational evidence — promoted when
-  real field failures arise that `check` cannot explain.
-- Client-credentials flow for catalog-only calls — decided no for v1;
-  promoted if a real caller needs catalog access with no user account at all.
+- A `diagnose` verb over the tool's own operational evidence — when field
+  failures arise that `check` cannot explain. · Client-credentials flow for
+  catalog-only calls — promoted if a caller needs catalog with no user account.
 - A dynamically chosen port, registered without one. Spotify's documentation
   describes this for loopback literals; its dashboard refused a portless
   registration on 2026-09-06. Promoted the day the dashboard accepts one.
 
 ## Conformance kit asserts
 
-- A recording model substrate captures every prompt sent by `plan`: GOOD = a
-  plan built from the brief alone passes; BAD = the same run with fetched
-  track metadata appended to the prompt fails.
-- `plan` run offline makes zero requests to `api.spotify.com`.
+- A recording model substrate captures every prompt sent: GOOD = no credential
+  appears in any prompt; BAD = a run with the access token spliced into the
+  prompt fails. The clause-2 half of the old boundary check, kept and inverted.
+- Every prompt the substrate captured appears verbatim in `transcript`: what
+  crossed is what the caller can read back.
 - Removed-endpoint check: static (no removed path literal in source) and
   runtime (no request path matches the removed list).
 - The token file is created at mode `0600`.
 - The port `login` binds is the port `check` reports: one value, two readers.
-- `login` refuses loudly, naming the port, when that port is already in use --
-  it never silently picks another.
-- `disconnect` leaves no Spotify content on disk afterward.
-- `evidence/`: one live round-trip — `login` → `plan` → `apply` → the
-  playlist exists — run by the owner against their own Development Mode app.
-  Owner-only; can't check by machine.
+- `login` refuses loudly, naming a port already in use, never silently picking
+  another. · `disconnect` leaves no Spotify content on disk afterward.
+- `evidence/`: one live round-trip — `login` → `plan` → `apply` → the playlist
+  exists — run by the owner against their own app. Can't check by machine.
 
 ## Reserved / open questions (NOT frozen)
 
@@ -85,9 +86,15 @@ by making the boundary something a reviewer can check.
 
 ## Changelog
 
-- **2026-09-06 — ratified ("Yep, do it all, consider it ratified and take it all
-  the way live").** Core 4 moves from an ephemeral port to a fixed, registered
-  one. Spotify's dashboard refused a portless registration that day, while its
-  documentation still described exactly that; the dashboard is the reality a
-  caller meets. The old clause also let `login` bind a random port while `check`
-  reported a configured one, so the tool contradicted its own report.
+- **2026-09-06 — ratified ("2" · full removal, labelled).** The one-way
+  boundary is gone: a model may read what Spotify returns, breaching §III, and
+  the Purpose says so rather than hiding it. What survives is the half that was
+  never about content — no credential in a prompt — plus the transcript, now
+  load-bearing. Removed because a model that cannot see its results cannot
+  correct them: measured that day, `genre:grunge` returns 5 and `year:` works
+  with other genres, but the conjunction returns 0, and only running it reveals
+  that.
+- **2026-09-06 — ratified ("take it all the way live").** Core 4 moves from an
+  ephemeral port to a fixed, registered one: Spotify's dashboard refused a
+  portless registration that day, and the old clause let `login` bind a random
+  port while `check` reported a configured one.

@@ -23,10 +23,13 @@ move it to another speaker, without ever producing audio itself.
 It is a personal tool. It runs inside **Development Mode**, the tier Spotify
 grants a developer's own app before wider review — capped at a handful of
 allowed users, gated behind the owner's own Spotify Premium account, and
-subject to Spotify's own quota. The center of the design is the **one-way
-boundary**: caller words go in, a plan comes out, and nothing Spotify ever
-returns — no track, no playlist, no listening history — crosses back into a
-model prompt. A model composes the plan; it never sees what Spotify says.
+subject to Spotify's own quota. Its model **reads what Spotify returns** — the
+searches it ran, the playlists it built — so it can correct its own aim rather
+than guess blind. Spotify's Developer Policy §III forbids that, and music-deck
+does it knowingly: `contracts/boundary.v1.md` states the breach in its Purpose
+rather than hiding it, and anyone who installs this inherits it. What stays
+true is that no credential ever enters a prompt, nothing accumulates on disk,
+and every prompt sent is readable afterward in the result's `transcript`.
 
 Every capability lives in the `music_deck` library first. The command line is
 a thin adapter over that library, never a second implementation: anything an
@@ -40,8 +43,8 @@ written down in `contracts/`.
 ## Principles
 
 1. **The library is the tool.** No capability exists only in the CLI.
-2. **The boundary is one-way.** Caller words in, plan out; nothing that came
-   back from Spotify ever reaches a model, on any turn.
+2. **What crosses is visible.** A model may read what Spotify returns; it may
+   never read a credential, and every prompt sent is in the `transcript`.
 3. **Deterministic paths need nothing.** No provider, no credentials, and for
    the smoke-test verb, no network at all.
 4. **Failures name the remedy.** An agent acts on the error directly; a human
@@ -60,8 +63,8 @@ written down in `contracts/`.
 
 ## What this is not
 
-- **Spotify content in a model prompt** — a model sees only the caller's own
-  brief and the tool's own static instructions, never anything Spotify returned.
+- **A credential in a model prompt** — the token and client ID never cross,
+  even though Spotify content now does.
 - **A bundled client ID** — credentials come from the caller's own registered
   app; the tool ships none and stores none beyond the caller's token.
 - **A local database of Spotify content** — caching is temporary and strictly
@@ -97,6 +100,15 @@ written down in `contracts/`.
 
 ## Changelog
 
+- **2026-09-06 — the one-way boundary removed, knowingly.** Principle 2 was
+  "nothing that came back from Spotify ever reaches a model." A model that
+  cannot see its own results cannot correct them: asked for 90s grunge, it
+  wrote `genre:grunge year:1990-1999`, got nothing, and had no way to learn
+  that — `genre:grunge` returns 5 tracks and `year:` works with other genres,
+  but that conjunction returns 0. The steward accepted the Developer Policy
+  §III breach with it labelled in the contract and the README, over a
+  counts-only loop that would have kept the tool distributable. Ratified
+  ("2").
 - **2026-09-04** — First draft, from negotiated decisions. Ratified by the intent steward (word: "ratified").
 - **2026-09-06** — Principle 5 restored to its own reasoning. It said
   "Structured output or it did not happen"; read literally that made every byte
