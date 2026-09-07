@@ -3,11 +3,14 @@ smart_tool_format: 1
 name: music-deck
 version: 0.1.0
 description: >
-  Turns a plain-words brief about music into a readable plan, then carries that
-  plan out against Spotify and drives whatever device is already playing. Reach
+  Carries out a plain-words brief about music against Spotify -- either in one
+  conversational verb that searches, reads what came back, corrects itself and
+  writes, or as a readable plan a person checks before anything runs. Also
+  searches the catalogue and drives whatever device is already playing. Reach
   for it when an agent needs to build or edit a Spotify playlist, look something
   up in the catalogue, or control playback without opening the Spotify app.
 use_cases:
+  - Carry out a plain-words brief end to end, correcting a search that returns nothing before writing anything
   - Turn a plain-words brief into a readable playlist plan a person can check before anything runs
   - Apply an approved plan against Spotify and get back what was found, kept, and skipped
   - Search the Spotify catalogue and inspect tracks, albums, artists, shows, and episodes
@@ -37,25 +40,45 @@ otherwise be opening the app by hand: building a playlist from a description,
 tidying one that already exists, looking something up in the catalogue, or
 pausing and skipping whatever is currently playing.
 
-The shape of the work is always the same. A **brief** -- the caller's own words
--- becomes a **plan**: a JSON document naming the searches to run, the rules to
-apply, and where the results land. A person reads the plan. Then `apply` carries
-it out deterministically and reports what was found, what was kept, what was
-skipped, and why.
+There are two shapes of work, and the difference is who reads the middle.
+
+**`do`** is the conversational one. A **brief** -- the caller's own words -- goes
+in, and music-deck runs a bounded loop: propose a search, run it, *read what
+Spotify actually returned*, correct the aim if it was wrong, then write. It
+reports the playlist as **read back from Spotify**, every query it tried, and
+what each returned. Reach for this when the caller wants the thing done.
+
+**`plan`** then **`apply`** is the reviewable one. The brief becomes a **plan**:
+a JSON document naming the searches to run, the rules to apply, and where the
+results land. A person reads the plan. Then `apply` carries it out
+deterministically and reports what was found, kept, and skipped. Reach for this
+when a person wants to check the middle before anything touches their account.
+
+The measured difference: asked for three 90s grunge songs, a plan wrote
+`genre:grunge year:1990-1999`, which returns **zero** results -- `genre:grunge`
+alone returns five -- and `apply` created an empty playlist anyway. `do` sees the
+zero and searches again, and cannot create a playlist from an empty result set at
+all.
 
 ## Sharp edges
 
-- **`plan` is the only verb that touches a model.** Every other verb runs with
-  no provider configured and no provider SDK installed. Invoked with no usable
-  model substrate, `plan` refuses (exit 3) naming the missing precondition; it
-  never falls back to a deterministic answer.
+- **`plan` and `do` are the model-backed verbs; `--help` says which.** Every
+  other verb runs with no provider configured and no provider SDK installed.
+  Invoked with no usable model substrate, either one refuses (exit 3) naming the
+  missing precondition; neither falls back to a deterministic answer.
+- **`do` is bounded, and says so.** A turn ceiling and a Spotify-request
+  ceiling, both reported in the result. It never creates a playlist for an empty
+  result set, and never writes a track URI no search in the run returned. A run
+  that ends with nothing written refuses `partial_result` carrying
+  `completeness` -- it does not report a success it did not have.
 - **No credential ever reaches a model -- Spotify content may.** The access
-  token, the refresh token and the client ID never enter a prompt, and `plan`
-  checks its own transcript for all three before handing back a plan. What
+  token, the refresh token and the client ID never enter a prompt, and both
+  model-backed verbs check their own transcript for all three before handing
+  back anything. What
   Spotify *returns* is a different matter: music-deck lets a model read search
   results so it can correct its own aim, which knowingly breaches Spotify
-  Developer Policy §III. The plan carries the verbatim prompt transcript, so a
-  reviewer can see exactly what crossed without reading code.
+  Developer Policy §III. Every result carries the verbatim prompt transcript, so
+  a reviewer can see exactly what crossed without reading code.
 - **You bring the credentials.** No client ID and no client secret ship with the
   tool. Auth is PKCE against the caller's own app, and the token is stored under
   the caller's own state directory, readable only by them.
@@ -109,10 +132,17 @@ Authorise against your own Spotify app, once:
 MUSIC_DECK_CLIENT_ID=<your client id> music-deck login
 ```
 
-Turn a brief into a plan, read it, then carry it out:
+Carry out a brief end to end -- searching, correcting, writing, reading back:
 
 ```
-music-deck plan --brief "upbeat 90s guitar songs for a Saturday morning" > plan.json
+music-deck do "three 90s grunge songs in a new playlist called Flannel"
+music-deck do "an hour of ambient for focus" --max-turns 12 --max-requests 60
+```
+
+Or take the reviewable route: turn a brief into a plan, read it, then apply it:
+
+```
+music-deck plan "upbeat 90s guitar songs for a Saturday morning" --output plan.json
 music-deck apply --plan plan.json
 ```
 

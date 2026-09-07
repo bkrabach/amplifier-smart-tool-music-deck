@@ -55,6 +55,8 @@ from music_deck.manifest import manifest as read_manifest
 from music_deck.verbs import catalog, library, player, playlists
 from music_deck.verbs.apply import apply_plan as run_apply
 from music_deck.verbs.apply import read_plan
+from music_deck.verbs.do import DEFAULT_MAX_REQUESTS, DEFAULT_MAX_TURNS
+from music_deck.verbs.do import do as run_do
 from music_deck.verbs.plan import plan as run_plan
 from music_deck.verbs.setup import render as render_setup
 from music_deck.verbs.setup import setup as run_setup
@@ -190,6 +192,19 @@ def _handle_plan(args: argparse.Namespace) -> dict[str, Any]:
                 "plan from stdout.",
             ) from exc
     return result
+
+
+def _handle_do(args: argparse.Namespace) -> dict[str, Any]:
+    """`do` -- model-backed, and the only verb that both reads and writes.
+
+    No ``--json``: ``cli.v1`` Core 4 gives that to *guidance*, and this is a
+    parsed result. One JSON document on stdout, every time.
+    """
+    return run_do(
+        args.brief,
+        max_turns=int(getattr(args, "max_turns", DEFAULT_MAX_TURNS)),
+        max_requests=int(getattr(args, "max_requests", DEFAULT_MAX_REQUESTS)),
+    )
 
 
 def _handle_apply(args: argparse.Namespace) -> dict[str, Any]:
@@ -1010,13 +1025,51 @@ VERBS: Final[tuple[Verb, ...]] = (
         model_backed=True,
         handler=_handle_plan,
         detail=(
-            "The only model-backed verb. With no usable model substrate it exits 3 "
+            "Model-backed. With no usable model substrate it exits 3 "
             "naming the missing precondition -- no provider configured, no "
             "credentials, the provider SDK absent, or the engine absent -- and "
             "never falls back to a deterministic answer. It makes no Spotify "
             "request at all and needs no token: every prompt is built from your "
             "own text and music-deck's own static prompt text, and `transcript` "
             "is there so you can check that yourself."
+        ),
+    ),
+    Verb(
+        "do",
+        "Carry out a brief end to end: search, read the results, correct, write.",
+        (
+            "A JSON object: `playlist`, `tracks` (read back from Spotify after "
+            "the write), `searches`, `actions`, `completeness`, `ceilings`, and "
+            "`transcript` (the verbatim text of every prompt sent)."
+        ),
+        args=(
+            Arg("brief", "string", "What you want, in your own words.", required=True),
+            Arg(
+                "--max-turns",
+                "integer",
+                "How many model turns the loop may spend.",
+                default=DEFAULT_MAX_TURNS,
+            ),
+            Arg(
+                "--max-requests",
+                "integer",
+                "How many Spotify requests the loop may send.",
+                default=DEFAULT_MAX_REQUESTS,
+            ),
+        ),
+        model_backed=True,
+        handler=_handle_do,
+        detail=(
+            "Model-backed, and the one verb that both reads Spotify and writes to "
+            "it. Unlike `plan`, the model sees what each search actually "
+            "returned and corrects itself -- a query that returns 0 results is "
+            "retried differently rather than written to an empty playlist. Both "
+            "ceilings are reported in the result. It never creates a playlist "
+            "for an empty result set, and never writes a track URI no search in "
+            "the run returned. With no usable model substrate it exits 3 naming "
+            "the missing precondition. A run that ends with nothing written "
+            "refuses `partial_result` carrying `completeness`, and every query "
+            "it tried is listed in `searches`."
         ),
     ),
 )
@@ -1045,7 +1098,7 @@ def terse_help() -> str:
     lines += [_verb_line(verb, width) for verb in VERBS]
     lines += [
         "",
-        "`plan` is the only verb that uses a model; everything else runs without one.",
+        "`plan` and `do` use a model; every other verb runs without one.",
         f"New here? Run `{PROG} setup`: it needs no credentials and no network, "
         "and names the one command to run next.",
         "",
@@ -1099,7 +1152,7 @@ def complete_help() -> str:
         f"  {EXIT_SUCCESS}  success",
         f"  {EXIT_FAILURE}  failure",
         f"  {EXIT_REFUSAL}  refusal, usage, or invalid input",
-        f"  {EXIT_NO_PROVIDER}  no model provider configured (the `plan` verb only)",
+        f"  {EXIT_NO_PROVIDER}  no model provider configured (model-backed verbs only)",
         "",
         "FAILURE SHAPE",
         '  {"error": {"code": ..., "message": ..., "remedy": ...}}',
@@ -1109,8 +1162,11 @@ def complete_help() -> str:
     lines += [
         "",
         "MODEL-BACKED VERBS",
-        "  plan -- the only one. Every other verb runs with no model provider",
-        "  configured and no provider SDK installed.",
+        "  plan -- a brief becomes a plan document; no Spotify request at all.",
+        "  do   -- a brief is carried out end to end; the model reads what each",
+        "          search returned and corrects itself before writing.",
+        "  Every other verb runs with no model provider configured and no",
+        "  provider SDK installed.",
         "",
         "VERBS",
     ]

@@ -33,12 +33,27 @@ import re
 from typing import Final
 
 PLAN_PROMPT_FILE: Final = "plan.md"
+DO_PROMPT_FILE: Final = "do.md"
 
 _SECTION_RE: Final = re.compile(r"^=== SECTION: ([a-z_]+) ===$", re.MULTILINE)
 
 # The parts `plan.md` must carry. A missing part is a broken install, not a
 # reason to send a prompt with a hole in it.
 PLAN_PARTS: Final[tuple[str, ...]] = ("instructions", "brief", "context")
+
+# The parts `do.md` must carry: the instructions, the tool vocabulary, the
+# caller's brief, and the run's budget. There is no `history` part, and its
+# absence is deliberate -- since 2026-09-06 the model drives `do` through native
+# tool calls, so what it has already learned reaches it as those calls' results
+# rather than as a history music-deck re-narrates into the next prompt. A
+# section this package still required but `music_deck.verbs.do` had stopped
+# sending would be a promise the shipped file could not keep.
+DO_PARTS: Final[tuple[str, ...]] = (
+    "instructions",
+    "tools",
+    "brief",
+    "ceilings",
+)
 
 
 class PromptError(RuntimeError):
@@ -87,6 +102,18 @@ def plan_prompt_parts() -> dict[str, str]:
     return parts
 
 
+def do_prompt_parts() -> dict[str, str]:
+    """The parts of ``do.md``: every section :data:`DO_PARTS` names."""
+    parts = split_parts(_read(DO_PROMPT_FILE))
+    missing = [name for name in DO_PARTS if not parts.get(name, "").strip()]
+    if missing:
+        raise PromptError(
+            f"{DO_PROMPT_FILE} is missing prompt parts: {missing}. "
+            f"It must carry all of: {list(DO_PARTS)}."
+        )
+    return parts
+
+
 def static_prompt_texts() -> tuple[str, ...]:
     """Every static text music-deck ships for a prompt, longest first.
 
@@ -97,14 +124,17 @@ def static_prompt_texts() -> tuple[str, ...]:
     Longest first is kept because a stable, deterministic order is worth more
     than an arbitrary one.
     """
-    texts = set(plan_prompt_parts().values())
+    texts = set(plan_prompt_parts().values()) | set(do_prompt_parts().values())
     return tuple(sorted(texts, key=len, reverse=True))
 
 
 __all__ = [
+    "DO_PARTS",
+    "DO_PROMPT_FILE",
     "PLAN_PARTS",
     "PLAN_PROMPT_FILE",
     "PromptError",
+    "do_prompt_parts",
     "plan_prompt_parts",
     "split_parts",
     "static_prompt_texts",
