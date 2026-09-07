@@ -1,22 +1,31 @@
-"""The one-way boundary, proven by a pair that actually discriminates.
+"""No credential in a prompt, proven by a pair that actually discriminates.
 
-Contracts served: ``boundary.v1`` Core 1 (`plan` performs no Spotify Web API
-request), Core 2 (every prompt is the caller's own text plus music-deck's own
-static prompt text, and nothing else), Core 3 (the transcript is an observable
-output of `plan`).
+Contracts served: ``boundary.v1`` Core 1 (a model **may** read what Spotify
+returns -- so Spotify content in a prompt passes here, deliberately), Core 2 (no
+credential ever enters a prompt: not the access token, the refresh token, or the
+client ID), Core 3 (the transcript is an observable output of `plan`, and every
+prompt the substrate captured appears in it verbatim).
 
 The pair is the point. A check that only ever sees good input proves nothing
 about bad input, so every claim here comes in two halves run through the *same*
 check function and the *same* recording double:
 
-* GOOD -- a plan built from the brief alone. The check passes.
-* BAD  -- the same run with fetched track metadata appended to the prompt by a
-  deliberately leaky assembler. The same check fails, naming ``boundary.v1
-  Core 2``.
+* GOOD -- a plan built from the brief alone, and a prompt carrying fetched
+  Spotify search results. Both pass. Content is allowed now.
+* BAD  -- the same run with a credential spliced into the prompt. The same check
+  fails, naming ``boundary.v1 Core 2`` and naming *which* credential.
 
 ``test_the_pair_discriminates`` asserts both halves in one test, because two
 passing tests in separate functions can both be vacuous in ways one test
-comparing them cannot.
+comparing them cannot. ``test_each_of_the_three_credentials_fails_on_its_own``
+does the three separately, because a BAD half that only ever catches one of
+three is a check with two holes in it.
+
+What changed on 2026-09-06: this file used to prove the *one-way boundary* --
+that nothing Spotify returned could reach a prompt, checked by covering each
+prompt with its allowed sources. That clause was removed by ratification
+(``contracts/boundary.v1.md``'s Changelog). The tests below prove the inverted
+rule, and the old GOOD/BAD fixtures have swapped sides.
 """
 
 from __future__ import annotations
@@ -25,44 +34,40 @@ import json
 import socket
 import subprocess
 import sys
-from pathlib import Path
 
 import pytest
 
-from music_deck import check_plan_transcript
+from music_deck import BoundaryReport, check_plan_transcript, check_prompts
 from music_deck.intelligence import ModelRequest
-from music_deck.prompt_boundary import CLAUSE, check_prompts, uncovered
-from music_deck.prompts import plan_prompt_parts, static_prompt_texts
-from music_deck.testing import Recording
+from music_deck.prompt_boundary import (
+    ACCESS_TOKEN,
+    BY_SHAPE,
+    BY_VALUE,
+    CLAUSE,
+    CLIENT_ID,
+    REFRESH_TOKEN,
+    Credential,
+    credentials_in,
+    machine_credentials,
+)
+from music_deck.testing import (
+    FAKE_ACCESS_TOKEN,
+    FAKE_CLIENT_ID,
+    FAKE_REFRESH_TOKEN,
+    SPOTIFY_SEARCH_RESULTS,
+    Recording,
+    credential_leak_prompt,
+)
 from music_deck.verbs.plan import assemble_prompt, plan
 
 BRIEF = "upbeat 90s guitar songs for a Saturday morning"
 
-# What a Spotify search response looks like once it has been fetched: exactly
-# the material boundary.v1 Core 2 forbids putting in front of a model.
-FETCHED_TRACK_METADATA = """## Tracks I found on Spotify for this brief
-
-[
-  {"id": "3n3Ppam7vgaVa1iaRUc9Lp", "name": "Mr. Brightside",
-   "uri": "spotify:track:3n3Ppam7vgaVa1iaRUc9Lp", "popularity": 84,
-   "duration_ms": 222075,
-   "external_urls": {"spotify": "https://open.spotify.com/track/3n3Ppam7vgaVa1iaRUc9Lp"}},
-  {"id": "1301WleyT98MSxVHPZCA6M", "name": "Bittersweet Symphony",
-   "uri": "spotify:track:1301WleyT98MSxVHPZCA6M", "popularity": 79,
-   "duration_ms": 348893}
-]"""
-
-
-def leaky_assemble_prompt(brief: str, fetched: str = FETCHED_TRACK_METADATA) -> str:
-    """What `plan` would look like if somebody "helpfully" fetched first.
-
-    Not a doctored string: the same static parts, the same caller brief, in the
-    same order, assembled the same way -- with one fetched-metadata block added.
-    It is the plausible mistake, written out, so the check gets to catch the
-    thing it exists to catch rather than a strawman.
-    """
-    parts = plan_prompt_parts()
-    return "\n\n".join([parts["instructions"], parts["brief"], brief, fetched])
+# The three credentials, as a caller hands them to the check.
+FAKE_CREDENTIALS = {
+    ACCESS_TOKEN: FAKE_ACCESS_TOKEN,
+    REFRESH_TOKEN: FAKE_REFRESH_TOKEN,
+    CLIENT_ID: FAKE_CLIENT_ID,
+}
 
 
 def record_good() -> Recording:
@@ -72,10 +77,10 @@ def record_good() -> Recording:
     return recorder
 
 
-def record_bad() -> Recording:
-    """The same double, driven by the leaky assembler."""
+def record_bad(credential: str = FAKE_ACCESS_TOKEN) -> Recording:
+    """The same double, driven by the credential-leaking assembler."""
     recorder = Recording()
-    recorder.run(ModelRequest(prompt=leaky_assemble_prompt(BRIEF)))
+    recorder.run(ModelRequest(prompt=credential_leak_prompt(BRIEF, credential)))
     return recorder
 
 
@@ -83,109 +88,307 @@ def record_bad() -> Recording:
 # Core 2 -- the discriminating pair
 # --------------------------------------------------------------------------- #
 def test_good_a_plan_built_from_the_brief_alone_passes():
-    report = check_plan_transcript(record_good().prompts, brief=BRIEF)
+    report = check_plan_transcript(record_good().prompts, credentials=FAKE_CREDENTIALS)
     assert report.ok, report.describe()
     assert report.checked == 1
+    assert report.known == 3  # it really was looking for all three
     assert CLAUSE in report.describe()
 
 
-def test_bad_the_same_run_with_fetched_track_metadata_appended_fails():
-    report = check_plan_transcript(record_bad().prompts, brief=BRIEF)
+def test_good_a_prompt_carrying_spotify_search_results_passes():
+    """boundary.v1 Core 1: a model may read what Spotify returns.
+
+    This is the fixture that used to be the BAD half. Ids, URIs, links,
+    popularity, duration -- all of it in front of a model, and the check says
+    kept, because the removed clause is removed.
+    """
+    prompt = assemble_prompt(BRIEF) + "\n\n" + SPOTIFY_SEARCH_RESULTS
+    recorder = Recording()
+    recorder.run(ModelRequest(prompt=prompt))
+
+    report = check_plan_transcript(recorder.prompts, credentials=FAKE_CREDENTIALS)
+
+    assert "spotify:track:" in recorder.prompts[0]
+    assert "open.spotify.com" in recorder.prompts[0]
+    assert report.ok, report.describe()
+
+
+def test_bad_the_same_run_with_the_access_token_spliced_in_fails():
+    report = check_plan_transcript(record_bad().prompts, credentials=FAKE_CREDENTIALS)
     assert not report.ok
     assert report.violations
     described = report.describe()
     assert CLAUSE in described
-    assert "3n3Ppam7vgaVa1iaRUc9Lp" in described  # it names what leaked
-    assert "a Spotify URI" in described
+    assert ACCESS_TOKEN in described  # it names which credential
+
+
+def test_each_of_the_three_credentials_fails_on_its_own():
+    """Core 2 names three. All three must fail, each naming itself."""
+    for kind, value in FAKE_CREDENTIALS.items():
+        report = check_plan_transcript(
+            record_bad(value).prompts, credentials=FAKE_CREDENTIALS
+        )
+        described = report.describe()
+        assert not report.ok, f"{kind} did not fail the check: {described}"
+        assert kind in described, f"the failure did not name {kind}: {described}"
+        assert CLAUSE in described
 
 
 def test_the_pair_discriminates():
     """One test, both halves, one check function. The bar the kit asserts.
 
-    boundary.v1's conformance kit: "GOOD = a plan built from the brief alone
-    passes; BAD = the same run with fetched track metadata appended to the
-    prompt fails."
+    boundary.v1's conformance kit: "A recording model substrate captures every
+    prompt sent: GOOD = no credential appears in any prompt; BAD = a run with
+    the access token spliced into the prompt fails."
     """
-    allowed = [*static_prompt_texts(), BRIEF]
-
-    good = check_prompts(record_good().prompts, allowed)
-    bad = check_prompts(record_bad().prompts, allowed)
+    good = check_prompts(record_good().prompts, FAKE_CREDENTIALS)
+    bad = check_prompts(record_bad().prompts, FAKE_CREDENTIALS)
 
     assert good.ok is True, good.describe()
     assert bad.ok is False, "the BAD fixture did not fail -- the check is not real"
     assert CLAUSE in bad.describe()
+    assert ACCESS_TOKEN in bad.describe()
 
 
-def test_the_check_catches_a_leak_that_looks_like_nothing_in_particular():
-    """Cover, not denylist: the leak nobody predicted fails too.
+def test_the_shape_net_catches_a_credential_the_check_was_never_given():
+    """The hole a value-only check would leave: nothing to look for.
 
-    A check that scanned for Spotify-shaped strings would pass this prompt. It
-    still carries a sentence from neither allowed source, which is the whole of
-    what Core 2 forbids.
+    On a machine with nothing signed in the exact-value net is empty. A check
+    that then passed every prompt would be reporting a pass it never earned, so
+    the shape net runs regardless.
     """
-    innocuous = "For reference, the last playlist this user built was called Beach."
-    recorder = Recording()
-    recorder.run(ModelRequest(prompt=leaky_assemble_prompt(BRIEF, innocuous)))
+    report = check_prompts(record_bad().prompts)  # no credentials at all
 
-    report = check_plan_transcript(recorder.prompts, brief=BRIEF)
+    assert report.known == 0
+    assert not report.ok, report.describe()
+    assert ACCESS_TOKEN in report.describe()
+    assert BY_SHAPE in report.describe()
+
+
+def test_the_value_net_catches_a_credential_with_no_recognisable_shape():
+    """And the hole the shape net would leave: a credential that looks like prose."""
+    odd = "correct-horse-battery-staple-not-token-shaped"
+    prompt = assemble_prompt(BRIEF) + f"\n\nthe client id is {odd}"
+
+    assert check_prompts([prompt]).ok, "the shape net should not see this at all"
+
+    report = check_prompts([prompt], {CLIENT_ID: odd})
     assert not report.ok
-    assert "Beach" in report.describe()
-    assert report.violations[0].looks_like == ()  # nothing recognisable, still a leak
+    assert CLIENT_ID in report.describe()
+    assert BY_VALUE in report.describe()
 
 
-def test_a_caller_who_pastes_spotify_content_into_context_is_not_a_leak():
-    """Core 2 allows "the caller's own text" -- all of it, whatever it contains.
+def test_a_failure_never_prints_the_credential_it_caught():
+    """A check whose message leaks the credential is a worse leak than the one
+    it reported."""
+    described = check_prompts(record_bad().prompts, FAKE_CREDENTIALS).describe()
 
-    boundary.v1's own reserved question ("whether a plan may carry a Spotify ID
-    the caller typed in themselves") is open, so this test records the decided
-    behaviour rather than leaving it to accident: text the caller supplied is
-    covered, because the caller supplied it.
+    for value in FAKE_CREDENTIALS.values():
+        assert value not in described
+    # not even a recognisable prefix of it
+    assert FAKE_ACCESS_TOKEN[:16] not in described
+    assert "character" in described  # it says where, not what
+
+
+def test_the_old_allowed_set_call_shape_is_refused_loudly():
+    """A caller written against the removed cover-based check gets told so.
+
+    Silently treating the old `allowed` list of source texts as credentials
+    would turn a boundary check into a random string search that passes.
     """
-    context = 'I already have spotify:track:3n3Ppam7vgaVa1iaRUc9Lp in there.'
-    recorder = Recording()
-    result = plan(BRIEF, context=context, intelligence=recorder)
-
-    assert context in recorder.prompts[0]
-    report = check_plan_transcript(result["transcript"], brief=BRIEF, context=context)
-    assert report.ok, report.describe()
-
-    # ...and the same transcript checked WITHOUT declaring that context fails,
-    # which is what makes the pass above a statement about provenance rather
-    # than about the characters themselves.
-    assert not check_plan_transcript(result["transcript"], brief=BRIEF).ok
-
-
-def test_every_prompt_is_covered_by_prompts_directory_plus_caller_arguments():
-    """The acceptance criterion, stated as the check states it."""
-    recorder = record_good()
-    residue = uncovered(recorder.prompts[0], [*static_prompt_texts(), BRIEF])
-    assert residue == "", f"unaccounted-for prompt text: {residue!r}"
+    with pytest.raises(TypeError) as raised:
+        check_prompts(record_bad().prompts, ["some allowed source text"])
+    assert "credentials" in str(raised.value).lower()
 
 
 def test_the_check_is_pure():
     """Same arguments, same answer -- no file, no environment, no clock."""
     prompts = record_good().prompts
-    allowed = [*static_prompt_texts(), BRIEF]
-    first = check_prompts(prompts, allowed)
-    second = check_prompts(list(prompts), list(allowed))
+    first = check_prompts(prompts, FAKE_CREDENTIALS)
+    second = check_prompts(list(prompts), dict(FAKE_CREDENTIALS))
     assert (first.ok, first.checked, len(first.violations)) == (
         second.ok,
         second.checked,
         len(second.violations),
     )
-    assert check_prompts([], allowed).ok is True
-    assert check_prompts(["anything at all"], []).ok is False
+
+
+def test_an_empty_transcript_is_not_reported_as_a_pass():
+    """AGENTS.md: a check that cannot run reports "can't check", never a pass."""
+    report = check_prompts([], FAKE_CREDENTIALS)
+    assert report.checked == 0
+    assert "not checked" in report.describe()
+    assert "nothing was proven" in report.describe()
+
+
+def test_a_pass_against_no_known_credential_says_so():
+    """A pass over an empty credential set is a weaker claim, and reads as one."""
+    described = check_prompts(record_good().prompts).describe()
+    assert "No credential value was supplied" in described
+
+
+def test_credentials_in_reports_one_finding_per_leaked_credential():
+    """The exact-value and shape nets agree on one token; it is not double-counted."""
+    prompt = credential_leak_prompt(BRIEF, FAKE_ACCESS_TOKEN)
+    findings = credentials_in(prompt, [Credential(ACCESS_TOKEN, FAKE_ACCESS_TOKEN)])
+    assert len(findings) == 1
+    assert findings[0].credential == ACCESS_TOKEN
+    assert findings[0].found_by == BY_VALUE
+    assert prompt[findings[0].at : findings[0].at + findings[0].length] == FAKE_ACCESS_TOKEN
 
 
 # --------------------------------------------------------------------------- #
-# Core 3 -- the transcript is an observable output
+# machine_credentials -- what the tool checks itself against
 # --------------------------------------------------------------------------- #
+def test_machine_credentials_reads_the_config_file_and_the_token_file(
+    monkeypatch, tmp_path
+):
+    """The client ID comes from where `check` reads it -- env OR the config file.
+
+    Env-only would miss every caller who ran `music-deck setup --client-id`,
+    which is the documented way to supply one.
+    """
+    config, state = tmp_path / "config", tmp_path / "state"
+    config.mkdir()
+    state.mkdir()
+    monkeypatch.setenv("MUSIC_DECK_CONFIG_DIR", str(config))
+    monkeypatch.setenv("MUSIC_DECK_STATE_DIR", str(state))
+    monkeypatch.delenv("MUSIC_DECK_CLIENT_ID", raising=False)
+    monkeypatch.delenv("SPOTIFY_CLIENT_ID", raising=False)
+
+    from music_deck.check import config_path, token_path
+
+    config_path().write_text(json.dumps({"client_id": FAKE_CLIENT_ID}), encoding="utf-8")
+    token_path().write_text(
+        json.dumps(
+            {"access_token": FAKE_ACCESS_TOKEN, "refresh_token": FAKE_REFRESH_TOKEN}
+        ),
+        encoding="utf-8",
+    )
+
+    found = {credential.kind: credential.value for credential in machine_credentials()}
+    assert found == {
+        CLIENT_ID: FAKE_CLIENT_ID,
+        ACCESS_TOKEN: FAKE_ACCESS_TOKEN,
+        REFRESH_TOKEN: FAKE_REFRESH_TOKEN,
+    }
+
+
+def test_machine_credentials_on_a_machine_with_nothing_signed_in(monkeypatch, tmp_path):
+    """Nothing configured is not an error: there is nothing to leak."""
+    monkeypatch.setenv("MUSIC_DECK_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("MUSIC_DECK_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.delenv("MUSIC_DECK_CLIENT_ID", raising=False)
+    monkeypatch.delenv("SPOTIFY_CLIENT_ID", raising=False)
+
+    assert machine_credentials() == ()
+
+
+def test_plan_refuses_to_hand_back_a_plan_whose_prompt_carried_a_credential(
+    monkeypatch, tmp_path
+):
+    """The tool's own self-check, proven to have teeth.
+
+    `plan` calls `check_plan_transcript` before it returns. This replaces the
+    assembler with the leaking one and asserts the verb refuses rather than
+    publishing a plan whose prompt held the keys.
+    """
+    from music_deck.errors import MusicDeckError
+    from music_deck.verbs import plan as plan_module
+
+    monkeypatch.setenv("MUSIC_DECK_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("MUSIC_DECK_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(
+        plan_module,
+        "assemble_prompt",
+        lambda brief, context=None: credential_leak_prompt(brief),
+    )
+
+    with pytest.raises(MusicDeckError) as raised:
+        plan(BRIEF, intelligence=Recording())
+
+    assert raised.value.code == "boundary_violation"
+    assert ACCESS_TOKEN in str(raised.value)
+    assert FAKE_ACCESS_TOKEN not in str(raised.value)
+
+
+# --------------------------------------------------------------------------- #
+# Public API -- these three names are exported and stay exported
+# --------------------------------------------------------------------------- #
+def test_the_public_boundary_api_is_still_public():
+    """music_deck-kwo inverted what these check. It did not rename them."""
+    import music_deck
+
+    for name in ("check_plan_transcript", "check_prompts", "BoundaryReport"):
+        assert hasattr(music_deck, name), f"music_deck.{name} disappeared"
+        assert name in music_deck.__all__, f"{name} left music_deck.__all__"
+
+    assert isinstance(check_prompts([], {}), BoundaryReport)
+    assert callable(check_plan_transcript)
+
+
+# --------------------------------------------------------------------------- #
+# Core 3 -- every prompt the substrate captured appears verbatim in transcript
+# --------------------------------------------------------------------------- #
+def prompts_missing_from(captured: list[str], transcript: list[str]) -> list[str]:
+    """Which captured prompts the transcript does not carry verbatim.
+
+    The kit assert, as a function, so the same comparison can be pointed at a
+    deliberately broken transcript below. Counts matter as well as membership:
+    two identical prompts sent and one published is a dropped prompt.
+    """
+    remaining = list(transcript)
+    missing: list[str] = []
+    for prompt in captured:
+        if prompt in remaining:
+            remaining.remove(prompt)
+        else:
+            missing.append(prompt)
+    return missing
+
+
+def test_every_prompt_the_substrate_captured_appears_verbatim_in_the_transcript():
+    """boundary.v1 kit assert: what crossed is what the caller can read back."""
+    recorder = Recording()
+    result = plan(BRIEF, intelligence=recorder)
+
+    assert recorder.prompts, "the substrate captured nothing to compare against"
+    assert prompts_missing_from(recorder.prompts, result["transcript"]) == []
+    assert result["transcript"] == recorder.prompts  # verbatim, and in order
+
+
+def test_the_transcript_assert_would_catch_a_dropped_prompt():
+    """The negative control. Without it the assert above could be vacuous.
+
+    Same comparison, same captured prompts, one prompt missing from the
+    published transcript -- and it must fail. A check that cannot fail is not a
+    check.
+    """
+    recorder = Recording()
+    recorder.run(ModelRequest(prompt=assemble_prompt(BRIEF)))
+    recorder.run(ModelRequest(prompt=assemble_prompt("a second, different brief")))
+
+    full = list(recorder.prompts)
+    dropped = full[:1]
+
+    assert prompts_missing_from(recorder.prompts, full) == []
+    missing = prompts_missing_from(recorder.prompts, dropped)
+    assert missing == [full[1]], "a dropped prompt slipped past the assert"
+
+
+def test_a_summarised_transcript_is_not_a_verbatim_one():
+    """"Verbatim" means verbatim: a truncated prompt is a missing prompt."""
+    recorder = record_good()
+    summarised = [prompt[:80] + " ..." for prompt in recorder.prompts]
+    assert prompts_missing_from(recorder.prompts, summarised) == recorder.prompts
+
+
 def test_the_result_carries_every_prompt_sent_verbatim():
     recorder = Recording()
     result = plan(BRIEF, intelligence=recorder)
 
     assert list(result) == ["plan", "transcript"]
-    assert result["transcript"] == recorder.prompts  # verbatim, not a summary
+    assert result["transcript"] == recorder.prompts
     assert len(result["transcript"]) == 1
     assert BRIEF in result["transcript"][0]
     assert result["transcript"][0] == assemble_prompt(BRIEF)
@@ -199,7 +402,23 @@ def test_the_brief_reaches_the_plan_verbatim():
 
     assert result["plan"]["brief"] == awkward
     assert awkward in recorder.prompts[0]
-    assert check_plan_transcript(result["transcript"], brief=awkward).ok
+    assert check_plan_transcript(result["transcript"], credentials=FAKE_CREDENTIALS).ok
+
+
+def test_a_caller_who_pastes_spotify_content_into_context_is_fine():
+    """Core 1 settles what used to be a provenance question.
+
+    Under the one-way boundary, Spotify content in a prompt passed only because
+    the caller had supplied it. Now it passes because it is Spotify content and
+    Spotify content is allowed -- so this passes whether or not the context is
+    declared to the check at all.
+    """
+    context = "I already have spotify:track:3n3Ppam7vgaVa1iaRUc9Lp in there."
+    recorder = Recording()
+    result = plan(BRIEF, context=context, intelligence=recorder)
+
+    assert context in recorder.prompts[0]
+    assert check_plan_transcript(result["transcript"], credentials=FAKE_CREDENTIALS).ok
 
 
 def test_the_plan_is_a_plan_v1_document():
@@ -221,7 +440,12 @@ def test_the_plan_is_a_plan_v1_document():
 
 
 # --------------------------------------------------------------------------- #
-# Core 1 -- no Spotify Web API request, no token needed
+# What `plan` does today: it fetches nothing
+#
+# NOT a contract clause. boundary.v1 Core 1 was "`plan` performs no Spotify Web
+# API request" until 2026-09-06; it now *permits* the fetch. These tests record
+# what this build actually does, so that wiring a fetch in is a deliberate act
+# that turns a test red rather than something that drifts in unnoticed.
 # --------------------------------------------------------------------------- #
 @pytest.fixture
 def network_tripwire(monkeypatch):
@@ -231,19 +455,19 @@ def network_tripwire(monkeypatch):
     class Guarded(socket.socket):
         def connect(self, address):  # noqa: D102
             attempts.append(address)
-            raise AssertionError(f"boundary.v1 Core 1: a socket connect to {address!r}")
+            raise AssertionError(f"plan attempted a socket connect to {address!r}")
 
         def connect_ex(self, address):  # noqa: D102
             attempts.append(address)
-            raise AssertionError(f"boundary.v1 Core 1: a socket connect to {address!r}")
+            raise AssertionError(f"plan attempted a socket connect to {address!r}")
 
     def guarded_getaddrinfo(host, *args, **kwargs):
         attempts.append(host)
-        raise AssertionError(f"boundary.v1 Core 1: a DNS lookup for {host!r}")
+        raise AssertionError(f"plan attempted a DNS lookup for {host!r}")
 
     def guarded_create_connection(address, *args, **kwargs):
         attempts.append(address)
-        raise AssertionError(f"boundary.v1 Core 1: a connection to {address!r}")
+        raise AssertionError(f"plan attempted a connection to {address!r}")
 
     monkeypatch.setattr(socket, "socket", Guarded)
     monkeypatch.setattr(socket, "getaddrinfo", guarded_getaddrinfo)
@@ -251,13 +475,10 @@ def network_tripwire(monkeypatch):
     return attempts
 
 
-def test_plan_makes_no_network_request_at_all(network_tripwire, monkeypatch, tmp_path):
-    """Core 1: zero requests to api.spotify.com -- here, zero requests anywhere.
-
-    The stronger statement is the easier one to trust: rather than filtering
-    attempts by host, nothing may leave at all, so a request to api.spotify.com
-    cannot hide behind a redirect, a proxy, or a different hostname.
-    """
+def test_plan_makes_no_network_request_in_this_build(
+    network_tripwire, monkeypatch, tmp_path
+):
+    """Today `plan` fetches nothing. Core 1 would allow it to; it does not."""
     monkeypatch.setenv("MUSIC_DECK_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("MUSIC_DECK_CONFIG_DIR", str(tmp_path / "config"))
 
@@ -268,7 +489,7 @@ def test_plan_makes_no_network_request_at_all(network_tripwire, monkeypatch, tmp
 
 
 def test_plan_needs_no_token_and_no_client_id(monkeypatch, tmp_path):
-    """Core 1 again, from the caller's side: nothing is signed in and it works."""
+    """From the caller's side: nothing is signed in and `plan` still works."""
     state = tmp_path / "state"
     state.mkdir()
     monkeypatch.setenv("MUSIC_DECK_STATE_DIR", str(state))
@@ -282,7 +503,7 @@ def test_plan_needs_no_token_and_no_client_id(monkeypatch, tmp_path):
 
 
 def test_the_plan_path_pulls_in_no_http_client(tmp_path):
-    """A structural echo of Core 1: nothing that could speak to Spotify loads."""
+    """Nothing that could speak to Spotify loads on the `plan` path today."""
     probe = (
         "import sys, json;"
         "from music_deck.verbs.plan import plan;"
@@ -350,7 +571,7 @@ def test_context_is_read_from_disk_and_passed_as_data(monkeypatch, tmp_path):
     cli._handle_plan(_namespace(brief=BRIEF, context=str(source), output=None))
 
     assert payload in recorder.prompts[0]
-    assert check_plan_transcript(recorder.prompts, brief=BRIEF, context=payload).ok
+    assert check_plan_transcript(recorder.prompts, credentials=FAKE_CREDENTIALS).ok
 
 
 def test_an_unreadable_context_file_is_a_usage_refusal(monkeypatch, tmp_path):

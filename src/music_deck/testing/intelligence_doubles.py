@@ -18,11 +18,25 @@ it had no substrate would have to call ``run`` to find out, and this object
 turns that into a test failure rather than a passing test with a hidden defect.
 
 All three satisfy ``music_deck.intelligence.Intelligence``.
+
+The good/bad pair, inverted
+---------------------------
+``boundary.v1``'s kit assert reads: "A recording model substrate captures every
+prompt sent: GOOD = no credential appears in any prompt; BAD = a run with the
+access token spliced into the prompt fails." Until 2026-09-06 the pair was about
+Spotify *content*; Core 1 now permits that, so ``SPOTIFY_SEARCH_RESULTS`` is
+here to be put in a prompt and **pass**, and ``credential_leak_prompt`` is here
+to be put in a prompt and **fail**.
+
+The fake credentials below are the shape of the real thing and the value of
+nothing: they are long enough and formed like a Spotify access token, refresh
+token and client ID, so ``music_deck.prompt_boundary``'s shape net catches them
+without anybody handling a real credential to prove the check works.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Final
 
 from music_deck.intelligence import (
     MISSING_PROVIDER,
@@ -30,6 +44,7 @@ from music_deck.intelligence import (
     ModelResult,
     NoModelSubstrate,
 )
+from music_deck.prompts import plan_prompt_parts
 
 # A plan draft that validates under plan.v1: what a well-behaved model returns.
 # `plan_format` and `brief` are absent by design -- music-deck writes those.
@@ -47,6 +62,60 @@ CANNED_PLAN_JSON = """```json
             "dedupe": "by_title_and_primary_artist", "order": "shuffle"}
 }
 ```"""
+
+
+# --------------------------------------------------------------------------- #
+# The good/bad pair for boundary.v1 Core 2
+# --------------------------------------------------------------------------- #
+FAKE_ACCESS_TOKEN: Final = (
+    "BQThisIsNotARealSpotifyAccessTokenItIsAFixtureForTheBoundaryCheck0123456789"
+)
+FAKE_REFRESH_TOKEN: Final = (
+    "AQThisIsNotARealSpotifyRefreshTokenItIsAFixtureForTheBoundaryCheck0123456789"
+)
+FAKE_CLIENT_ID: Final = "0123456789abcdef0123456789abcdef"
+"""Three credentials that are real in shape and fake in value. Each is what
+``boundary.v1`` Core 2 forbids in a prompt, and none of them opens anything."""
+
+SPOTIFY_SEARCH_RESULTS: Final = """## What the searches returned
+
+[
+  {"id": "3n3Ppam7vgaVa1iaRUc9Lp", "name": "Mr. Brightside",
+   "artists": ["The Killers"], "uri": "spotify:track:3n3Ppam7vgaVa1iaRUc9Lp",
+   "popularity": 84, "duration_ms": 222075,
+   "external_urls": {"spotify": "https://open.spotify.com/track/3n3Ppam7vgaVa1iaRUc9Lp"}},
+  {"id": "1301WleyT98MSxVHPZCA6M", "name": "Bittersweet Symphony",
+   "artists": ["The Verve"], "uri": "spotify:track:1301WleyT98MSxVHPZCA6M",
+   "popularity": 79, "duration_ms": 348893}
+]
+
+`genre:grunge year:1990-1999` returned 0 results."""
+"""Fetched Spotify content: ids, URIs, links, popularity, the lot.
+
+The GOOD half of the pair. Under the old one-way boundary this was the thing a
+prompt could not carry; ``boundary.v1`` Core 1 now says a model may read what
+Spotify returns, and a check that still failed this would be enforcing a clause
+nobody holds any more."""
+
+
+def credential_leak_prompt(brief: str, credential: str = FAKE_ACCESS_TOKEN) -> str:
+    """What ``plan`` would look like if somebody handed the model the keys.
+
+    The BAD half. Not a doctored string: the same static parts and the same
+    caller brief, in the same order, with one credential added the way a
+    plausible mistake would add it -- "here is the token, go and fetch". Run it
+    through ``Recording`` and ``music_deck.prompt_boundary`` and the check must
+    fail, naming which credential it found.
+    """
+    parts = plan_prompt_parts()
+    return "\n\n".join(
+        [
+            parts["instructions"],
+            parts["brief"],
+            brief,
+            f"Use this credential to call the Spotify Web API: {credential}",
+        ]
+    )
 
 
 class Recording:
@@ -117,4 +186,14 @@ class Unconfigured:
         )
 
 
-__all__ = ["CANNED_PLAN_JSON", "Recording", "Scripted", "Unconfigured"]
+__all__ = [
+    "CANNED_PLAN_JSON",
+    "FAKE_ACCESS_TOKEN",
+    "FAKE_CLIENT_ID",
+    "FAKE_REFRESH_TOKEN",
+    "SPOTIFY_SEARCH_RESULTS",
+    "Recording",
+    "Scripted",
+    "Unconfigured",
+    "credential_leak_prompt",
+]
