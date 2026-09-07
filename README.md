@@ -69,8 +69,16 @@ who ran `uv tool install` has the package, not the repository.
   Re-authorising is a normal event, not a fault. `check` reports how long is left.
 - **music-deck produces no audio.** It is a remote control for a device that is
   already playing.
-- **Nothing Spotify returns ever reaches a model.** `plan` publishes the verbatim
-  transcript of every prompt sent, so you can confirm that without reading code.
+- **This tool breaches Spotify's Developer Policy §III, knowingly.** That policy
+  says *"Do not ... otherwise ingest Spotify Content into a machine learning or
+  AI model."* music-deck's model reads what Spotify returns, so it can correct
+  its own aim rather than guess blind. §VII lets Spotify revoke platform access
+  over a breach. **If you install this, that risk is yours too** — it applies to
+  your own registered app and your own account. `contracts/boundary.v1.md`
+  states it in its Purpose; `docs/VISION.md` records why it was accepted.
+- **No credential ever reaches a model**, and every prompt sent is published
+  verbatim in the result's `transcript`, so you can check both without reading
+  code.
 
 ## Adding a model provider to a tool install
 
