@@ -49,9 +49,13 @@ skipped, and why.
   no provider configured and no provider SDK installed. Invoked with no usable
   model substrate, `plan` refuses (exit 3) naming the missing precondition; it
   never falls back to a deterministic answer.
-- **Nothing Spotify returns ever reaches a model.** A prompt is built from the
-  caller's own text and music-deck's own static schema, and the plan carries the
-  verbatim prompt transcript so a reviewer can confirm that without reading code.
+- **No credential ever reaches a model -- Spotify content may.** The access
+  token, the refresh token and the client ID never enter a prompt, and `plan`
+  checks its own transcript for all three before handing back a plan. What
+  Spotify *returns* is a different matter: music-deck lets a model read search
+  results so it can correct its own aim, which knowingly breaches Spotify
+  Developer Policy §III. The plan carries the verbatim prompt transcript, so a
+  reviewer can see exactly what crossed without reading code.
 - **You bring the credentials.** No client ID and no client secret ship with the
   tool. Auth is PKCE against the caller's own app, and the token is stored under
   the caller's own state directory, readable only by them.
