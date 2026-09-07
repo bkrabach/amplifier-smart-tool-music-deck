@@ -30,7 +30,10 @@ Nothing here reaches ``api.spotify.com`` or a model provider. Spotify is
 
 from __future__ import annotations
 
+import asyncio
 import json
+import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +41,7 @@ import pytest
 
 from music_deck import cli
 from music_deck.errors import EXIT_NO_PROVIDER, EXIT_REFUSAL, EXIT_SUCCESS, ErrorCode, MusicDeckError
+from music_deck.intelligence import AmplifierIntelligence, ModelRequest
 from music_deck.prompt_boundary import check_prompts, machine_credentials
 from music_deck.testing.intelligence_doubles import (
     FAKE_ACCESS_TOKEN,
@@ -47,6 +51,7 @@ from music_deck.testing.intelligence_doubles import (
 )
 from music_deck.verbs import do as do_module
 from music_deck.verbs.do import DEFAULT_MAX_REQUESTS, DEFAULT_MAX_TURNS, TOOLS, do
+from test_engine_boot import install_fake_engine
 from spotify_fakes import (
     FakeTransport,
     install_token,
@@ -905,6 +910,161 @@ def test_a_bad_argument_from_the_model_is_recycled_as_an_observation(
 
     assert result["actions"][0]["observation"]["error"] == ErrorCode.USAGE
     assert len(result["tracks"]) == 3
+
+
+# =========================================================================== #
+# The seam to a real engine -- tools are DECLARED, not described
+# =========================================================================== #
+def _engine_with_tools(monkeypatch):
+    """The recording stand-in engine, taught the three names tools need.
+
+    ``install_fake_engine`` predates caller tools, so its module carries no
+    ``Tool``/``ToolFailed``/``ApprovalResponse``. Adding them here rather than
+    there keeps ``tests/test_engine_boot.py`` -- another lane's file, and the
+    place ``plan``'s no-tools shape is frozen -- untouched.
+    """
+    ledger = install_fake_engine(monkeypatch)
+    module = sys.modules["amplifier_agent"]
+
+    @dataclass
+    class FakeTool:
+        name: str
+        description: str
+        input_schema: dict
+        handler: Any
+        safety: dict | None = None
+
+    class FakeToolFailed(Exception):
+        pass
+
+    @dataclass
+    class FakeApprovalResponse:
+        decision: str
+        reason: str | None = None
+
+    @dataclass
+    class FakeApprovalRequest:
+        name: str
+        request_id: str = "r1"
+        summary: str = ""
+        call_id: str = "c1"
+
+    monkeypatch.setattr(module, "Tool", FakeTool, raising=False)
+    monkeypatch.setattr(module, "ToolFailed", FakeToolFailed, raising=False)
+    monkeypatch.setattr(module, "ApprovalResponse", FakeApprovalResponse, raising=False)
+    return ledger, FakeApprovalRequest
+
+
+def test_the_engine_is_handed_real_tool_objects_not_a_prompt_describing_them(
+    monkeypatch, signed_in
+):
+    """The defect this lane exists to fix, asserted at the boot boundary.
+
+    On 2026-09-06 ``do`` shipped with ``TOOLS`` as a tuple of *name strings*, a
+    prompt describing them, and no ``tools=`` anywhere near ``AgentOptions``. A
+    real model made a native tool call and the engine refused the turn. So this
+    reads the options the engine was actually constructed with, not the prompt.
+    """
+    ledger, _ = _engine_with_tools(monkeypatch)
+    connect(monkeypatch, Spotify({LIVE_QUERY: GRUNGE}))
+
+    # The stand-in engine answers with text and calls nothing, so the run ends
+    # with nothing written -- which is the honest outcome and not what is under
+    # test here. What is under test is what the agent was *built* with.
+    with pytest.raises(MusicDeckError):
+        do(BRIEF, intelligence=AmplifierIntelligence())
+
+    [options] = ledger.agent_options
+    assert [tool.name for tool in options.tools] == list(TOOLS)
+    for tool in options.tools:
+        assert tool.description.strip(), tool.name
+        assert tool.input_schema["type"] == "object"
+        # A misspelled argument becomes visible to the model here rather than
+        # becoming a default it never asked for.
+        assert tool.input_schema["additionalProperties"] is False
+        assert tool.input_schema["$schema"] == do_module.SCHEMA_DIALECT
+        assert callable(tool.handler)
+
+
+def test_a_tool_handler_calls_the_library_rather_than_a_second_implementation(
+    monkeypatch, signed_in
+):
+    """``cli.v1`` Core 7: the library is the tool, on this path too.
+
+    The handler the engine holds is the same code ``apply`` runs. Proven by
+    replacing ``catalog.search`` and watching the tool call arrive there -- a
+    second implementation inside ``do`` would sail straight past it.
+    """
+    ledger, _ = _engine_with_tools(monkeypatch)
+    connect(monkeypatch, Spotify({LIVE_QUERY: GRUNGE}))
+    seen: list[str] = []
+    real = do_module.catalog.search
+
+    def watched(query, **kwargs):
+        seen.append(query)
+        return real(query, **kwargs)
+
+    monkeypatch.setattr(do_module.catalog, "search", watched)
+
+    with pytest.raises(MusicDeckError):
+        do(BRIEF, intelligence=AmplifierIntelligence())
+    assert seen == [], "the stand-in engine calls nothing on its own"
+
+    [options] = ledger.agent_options
+    search = next(tool for tool in options.tools if tool.name == "search")
+    asyncio.run(search.handler({"query": LIVE_QUERY, "type": "track"}, None))
+
+    assert seen == [LIVE_QUERY]
+
+
+def test_declaring_tools_supplies_an_allow_list_and_not_a_blanket_allow(
+    monkeypatch, signed_in
+):
+    """The approvals question a declared tool forces, and this lane's answer.
+
+    The engine asks its authority before *every* tool call and answers
+    ``unavailable`` when there is none, so a policy is not optional here. It is
+    an allow-list rather than the literal ``"allow"`` because the engine
+    registers its own built-ins -- ``bash``, ``write``, ``web_fetch`` -- next to
+    music-deck's, and "allow" would mean all of them.
+    """
+    ledger, request_of = _engine_with_tools(monkeypatch)
+    connect(monkeypatch, Spotify({LIVE_QUERY: GRUNGE}))
+
+    with pytest.raises(MusicDeckError):
+        do(BRIEF, intelligence=AmplifierIntelligence())
+
+    [options] = ledger.agent_options
+    assert options.approvals not in (None, "allow", "deny")
+    assert callable(options.approvals)
+    # A ceiling that binds must end the turn, not hand the model an error to
+    # work around -- on an engine whose own iteration cap is -1.
+    assert options.tool_error_policy == "stop"
+
+    for name in TOOLS:
+        assert asyncio.run(options.approvals(request_of(name=name))).decision == "allow"
+    for name in ("bash", "write", "web_fetch", "delegate"):
+        answer = asyncio.run(options.approvals(request_of(name=name)))
+        assert answer.decision == "deny", name
+        assert name in answer.reason
+
+
+def test_plan_still_gets_an_agent_with_no_tools_and_no_approvals(monkeypatch):
+    """The other half of the promise: nothing above changed `plan`.
+
+    ``tests/test_engine_boot.py`` asserts this too. It is repeated here because
+    it is *this* change that could have broken it: one shared code path now
+    builds both shapes, and the tools-less one has to stay exactly what it was.
+    """
+    ledger, _ = _engine_with_tools(monkeypatch)
+
+    AmplifierIntelligence().run(ModelRequest(prompt="a prompt with no tools"))
+
+    [options] = ledger.agent_options
+    assert options.tools is None
+    assert options.approvals is None
+    assert options.skills is None
+    assert options.mcp_servers is None
 
 
 # =========================================================================== #
