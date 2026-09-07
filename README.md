@@ -27,16 +27,39 @@ gap, and the single next command to run — not the whole orientation every time
 which is `music-deck setup --guide`. `--json` returns the same content structured
 for anything that parses. `login` is the only interactive verb there is.
 
-Then:
+Then, if you just want the thing done:
+
+```
+music-deck do "three 90s grunge songs in a new playlist called Flannel"
+```
+
+`do` runs a bounded loop against your account: it proposes a search, runs it,
+**reads what Spotify actually returned**, corrects its aim if the search came
+back empty, then writes — and reports the playlist as read back from Spotify,
+not as it intended it. Both ceilings (turns, Spotify requests) are in the
+result, along with every query it tried and what each returned.
+
+Or, if you want to check the middle before anything touches your account:
 
 ```
 music-deck plan "upbeat 90s guitar songs for a Saturday morning" --output plan.json
 music-deck apply plan.json
 ```
 
-`plan` is the only verb that uses a model. Without a usable model substrate it
-refuses (exit 3) naming exactly which precondition is missing, and never falls
-back to a deterministic answer. Every other verb runs with no provider at all.
+`plan` writes a document a person reads; `apply` carries it out deterministically
+and makes no model call at all.
+
+**Why both exist.** Asked for three 90s grunge songs, `plan` wrote
+`genre:grunge year:1990-1999`. That search returns **zero** results —
+`genre:grunge` on its own returns five, and `genre:alternative year:1990-1999`
+returns five — and nothing but running it reveals that. `apply` then created an
+empty playlist. `do` sees the zero and searches again, and there is no call in it
+that can create a playlist from an empty result set.
+
+`plan` and `do` are the model-backed verbs, and `music-deck --help` says which
+verbs are. Without a usable model substrate either one refuses (exit 3) naming
+exactly which precondition is missing, and never falls back to a deterministic
+answer. Every other verb runs with no provider at all.
 
 ## Registering your own Spotify app
 
@@ -78,7 +101,13 @@ who ran `uv tool install` has the package, not the repository.
   states it in its Purpose; `docs/VISION.md` records why it was accepted.
 - **No credential ever reaches a model**, and every prompt sent is published
   verbatim in the result's `transcript`, so you can check both without reading
-  code.
+  code. Both model-backed verbs run that check over their own transcript before
+  handing anything back, and refuse rather than answer if it fails.
+- **`do` spends your Spotify quota, and is bounded so it cannot run away.**
+  Default ceilings are 8 model turns and 40 Spotify requests; `--max-turns` and
+  `--max-requests` move them. Development Mode's quota is shared and Spotify
+  does not tell you what is left of it, which is why the ceilings are not
+  optional.
 
 ## Adding a model provider to a tool install
 
@@ -89,7 +118,8 @@ inside it. To add a provider SDK:
 uv tool install --force --with anthropic git+https://github.com/bkrabach/amplifier-smart-tool-music-deck
 ```
 
-`plan`'s refusal names this command for you, with the right package in it.
+The refusal from `plan` or `do` names this command for you, with the right
+package in it.
 
 ## Governance
 
