@@ -38,20 +38,13 @@ Contracts served
   reason string -- no Spotify content. ``check`` reads it to answer "is this
   account allowlisted?", which Spotify offers no endpoint for.
 
-Codes outside the frozen vocabulary
------------------------------------
-``cli.v1`` Core 6 freezes the ten codes a *caller* can provoke. Two failures
-here are music-deck's own fault or the network's, not the caller's, and they are
-deliberately **not** given frozen names (which would fork a vocabulary this lane
-does not own -- ``errors.py`` is MD-1's file):
-
-* ``removed_endpoint`` -- the guard caught music-deck about to construct a path
-  Spotify has withdrawn. This is a defect in music-deck, reported loudly.
-* ``spotify_error`` / ``network_unreachable`` -- an upstream fault with no
-  frozen name.
-
-All three fall through ``errors.exit_code_for`` to exit ``1`` ("failure"), which
-is exactly what ``cli.v1`` Core 5 leaves that code for.
+Adapter-local failures
+----------------------
+``spotify_error`` is the contracted code for an otherwise-unclassified Spotify
+response. ``removed_endpoint`` and ``network_unreachable`` are adapter-local
+diagnostics; the public error envelope maps them to ``internal_error`` with a
+``diagnostic_code``. They still exit ``1`` ("failure"), but cannot silently add
+strings to the caller-facing vocabulary.
 
 Why the standard library
 ------------------------
@@ -76,7 +69,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Final, Mapping, Protocol
 
 from music_deck.check import LAST_403_FILENAME, state_dir
-from music_deck.errors import ErrorCode, MusicDeckError
+from music_deck.errors import ErrorCode, MusicDeckError, internal_error
 
 API_BASE: Final = "https://api.spotify.com/v1"
 """Every path in this module is relative to this."""
@@ -186,19 +179,9 @@ class UrllibTransport:
                 body=exc.read(),
             )
         except urllib.error.URLError as exc:
-            raise MusicDeckError(
-                "network_unreachable",
-                f"Could not reach {urllib.parse.urlsplit(request.url).netloc}: "
-                f"{exc.reason}",
-                "Check the network connection and try again.",
-            ) from exc
+            raise internal_error("network_unreachable") from exc
         except TimeoutError as exc:
-            raise MusicDeckError(
-                "network_unreachable",
-                f"Timed out after {timeout_s:g}s waiting for "
-                f"{urllib.parse.urlsplit(request.url).netloc}.",
-                "Check the network connection and try again.",
-            ) from exc
+            raise internal_error("network_unreachable") from exc
 
 
 class TokenSource(Protocol):
@@ -368,27 +351,21 @@ REMOVED_ENDPOINTS: Final[tuple[RemovedEndpoint, ...]] = (
 class RemovedEndpointError(MusicDeckError):
     """music-deck was about to construct a path Spotify has withdrawn.
 
-    Not a frozen refusal code: no caller can provoke this by asking for
-    something reasonable, so it is a defect in music-deck rather than a
-    conversation with the user. It exits ``1`` and names the replacement.
+    No caller can provoke this by asking for something reasonable, so it is a
+    defect in music-deck rather than a conversation with the user. Its public
+    envelope is ``internal_error`` (exit ``1``), retaining ``removed_endpoint``
+    only as its diagnostic code and naming the replacement in the local error.
     """
 
     def __init__(self, method: str, path: str, removed: RemovedEndpoint) -> None:
-        super().__init__(
+        safe = internal_error(
             "removed_endpoint",
-            f"{method.upper()} {path} is in the {removed.name} family, which "
-            f"Spotify withdrew in {removed.withdrawn}. music-deck refused to send "
-            f"it. Replacement: {removed.replacement}.",
-            (
-                "This is a defect in music-deck, not something you did. "
-                "boundary.v1 Core 7 forbids constructing a withdrawn endpoint; "
-                "report it."
-            ),
             method=method.upper(),
-            path=path,
+            path=redact_path(path.split("?", 1)[0]),
             withdrawn=removed.withdrawn,
             replacement=removed.replacement,
         )
+        super().__init__(safe.code, safe.message, safe.remedy, **safe.extra)
 
 
 def check_removed(method: str, path: str) -> None:
@@ -468,7 +445,7 @@ def redact_path(path: str) -> str:
     allowlisted"; the *shape* of the endpoint is all that needs to survive, so
     every id is redacted before anything is written.
     """
-    return _SPOTIFY_ID.sub("{id}", path)
+    return _SPOTIFY_ID.sub("{id}", path.split("?", 1)[0])
 
 
 def record_403(path: str, reason: str | None) -> None:
@@ -687,21 +664,15 @@ class SpotifyClient:
         if not self._tokens.can_refresh():
             raise MusicDeckError(
                 ErrorCode.NOT_AUTHENTICATED,
-                _message_of(
-                    response.json(),
-                    "Spotify rejected the access token and there is no refresh "
-                    "token to renew it with.",
-                ),
+                "Spotify rejected the access token and there is no refresh token "
+                "to renew it with.",
             )
         bearer = self._tokens.refresh()  # raises reauthorization_required if rejected
         retried = self._send(method, path, params, body, bearer=bearer)
         if retried.status == 401:
             raise MusicDeckError(
                 ErrorCode.NOT_AUTHENTICATED,
-                _message_of(
-                    retried.json(),
-                    "Spotify rejected the access token even after refreshing it.",
-                ),
+                "Spotify rejected the access token even after refreshing it.",
             )
         return retried
 
@@ -726,7 +697,7 @@ class SpotifyClient:
             # before this point, by refreshing.
             raise MusicDeckError(
                 ErrorCode.NOT_AUTHENTICATED,
-                _message_of(payload, "Spotify rejected the access token."),
+                "Spotify rejected the access token.",
             )
 
         if status == 403:
@@ -737,8 +708,7 @@ class SpotifyClient:
 
         raise MusicDeckError(
             "spotify_error",
-            f"Spotify answered {status} for {method.upper()} {path}: "
-            f"{_message_of(payload, 'no message in the response body')}",
+            f"Spotify answered {status} for {method.upper()} {redact_path(path)}.",
             "Run `music-deck check` to report the tool's state, then try again.",
             status=status,
             endpoint=redact_path(path),
@@ -753,30 +723,20 @@ class SpotifyClient:
         if re.match(rf"^/playlists/{_ID}/items/?$", bare) and method.upper() == "GET":
             return MusicDeckError(
                 ErrorCode.PLAYLIST_ITEMS_UNAVAILABLE,
-                _message_of(
-                    payload,
-                    "Spotify returns a playlist's items only to an account that "
-                    "owns or collaborates on it.",
-                ),
+                "Spotify returns a playlist's items only to an account that owns "
+                "or collaborates on it.",
             )
         if reason == "PREMIUM_REQUIRED" or self._is_player_write(method, bare):
             return MusicDeckError(
                 ErrorCode.PREMIUM_REQUIRED,
-                _message_of(
-                    payload,
-                    "Spotify refused a playback control. Every Player write "
-                    "endpoint requires Spotify Premium on the account being "
-                    "controlled.",
-                ),
+                "Spotify refused a playback control. Every Player write endpoint "
+                "requires Spotify Premium on the account being controlled.",
             )
         record_403(bare, reason)
         return MusicDeckError(
             ErrorCode.NOT_ALLOWLISTED,
-            _message_of(
-                payload,
-                "Spotify refused the request with 403. On a Development Mode app "
-                "that means this account is not on the app's allowlist.",
-            ),
+            "Spotify refused the request with 403. On a Development Mode app "
+            "that means this account is not on the app's allowlist.",
         )
 
     @staticmethod
@@ -788,22 +748,15 @@ class SpotifyClient:
         if _reason_of(payload) == "QUOTA_EXCEEDED":
             return MusicDeckError(
                 ErrorCode.QUOTA_EXCEEDED,
-                _message_of(
-                    payload,
-                    "Your Spotify developer quota is exhausted. This is a "
-                    "different mechanism from rate limiting and waiting will not "
-                    "clear it.",
-                ),
+                "Your Spotify developer quota is exhausted. This is a different "
+                "mechanism from rate limiting and waiting will not clear it.",
                 reason="QUOTA_EXCEEDED",
             )
         retry_after = _retry_after_of(response)
         return MusicDeckError(
             ErrorCode.RATE_LIMITED,
-            _message_of(
-                payload,
-                "Spotify rate-limited this app (429). music-deck already honoured "
-                "`Retry-After` once and will not wait again.",
-            ),
+            "Spotify rate-limited this app (429). music-deck already honoured "
+            "`Retry-After` once and will not wait again.",
             retry_after_s=retry_after,
         )
 

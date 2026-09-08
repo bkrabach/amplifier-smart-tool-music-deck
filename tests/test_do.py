@@ -900,7 +900,8 @@ def test_a_tool_music_deck_never_declared_cannot_be_called(monkeypatch, signed_i
     failure = raised.value
     assert failure.code == "internal_error"
     assert failure.extra["engine_code"] == "provider_failed"
-    assert "undeclared tool" in failure.message
+    assert "internal error" in failure.message
+    assert "undeclared tool" not in failure.message
 
 
 @pytest.mark.parametrize(
@@ -930,7 +931,9 @@ def test_every_engine_code_leaves_do_wearing_a_contracted_one(engine_code, expec
 
     assert named.code == expected
     assert named.code in do_module.NAMED_IN_REFUSALS
-    assert named.message == "the engine said so"
+    assert named.message.strip()
+    assert named.message != "the engine said so"
+    assert named.remedy.strip()
     if expected == "internal_error" and engine_code != "internal_error":
         assert named.extra["engine_code"] == engine_code
 

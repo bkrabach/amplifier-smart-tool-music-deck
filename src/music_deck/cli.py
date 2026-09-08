@@ -1314,7 +1314,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         return _dispatch(args)
     except MusicDeckError as exc:
-        print(exc.message, file=sys.stderr)
+        # ``MusicDeckError`` can carry an adapter-local diagnostic code while it
+        # travels through the library. Print the normalised public message too:
+        # stderr is observable, so printing the raw one would reopen the
+        # vocabulary (or expose an underlying error's detail) beside a closed
+        # JSON envelope.
+        print(exc.envelope()["error"]["message"], file=sys.stderr)
         return emit_error(exc)
     except KeyboardInterrupt:
         # Deliberately its own clause, and deliberately not `except
@@ -1334,11 +1339,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         )
     except Exception as exc:  # noqa: BLE001 - a failure is loud, never a traceback
-        print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
+        print(f"{PROG}: unexpected internal error.", file=sys.stderr)
         return emit_error(
             MusicDeckError(
                 "internal_error",
-                f"{PROG} hit an unexpected internal error: {type(exc).__name__}: {exc}",
+                f"{PROG} hit an unexpected internal error.",
                 f"Run `{PROG} check` to report the tool's state, then report this.",
             )
         )

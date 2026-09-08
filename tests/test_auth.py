@@ -379,7 +379,7 @@ def test_login_with_no_browser_and_no_terminal_fails_loud_and_fast(monkeypatch, 
         login(timeout_s=120, open_browser=lambda _url: False, stdin_isatty=lambda: False)
 
     assert raised.value.code == "no_browser"
-    assert raised.value.exit_code == EXIT_FAILURE
+    assert raised.value.exit_code == EXIT_REFUSAL
     assert "interactive terminal" in raised.value.remedy
     assert raised.value.extra["authorize_url"].startswith("https://accounts.spotify.com/")
     assert time.monotonic() - started < 5.0
@@ -416,8 +416,38 @@ def test_login_reports_the_refusal_when_spotify_declines(monkeypatch, xdg_state)
         login(timeout_s=10, open_browser=Declines(), stdin_isatty=lambda: False)
 
     assert raised.value.code == ErrorCode.NOT_AUTHENTICATED
-    assert "access_denied" in raised.value.message
+    assert "did not authorise" in raised.value.message
     assert not xdg_state.exists()
+
+
+def test_oauth_error_payload_never_enters_a_public_error(monkeypatch, xdg_state):
+    """A token-endpoint error is remote input, not a safe explanation to echo."""
+    marker = "fixture-oauth-secret-must-not-escape"
+    transport = FakeTransport(
+        [
+            json_response(
+                400,
+                {"error": "invalid_grant", "error_description": marker},
+            )
+        ]
+    )
+
+    with pytest.raises(MusicDeckError) as raised:
+        auth.exchange_code(
+            client_id="client-id-under-test",
+            code="authorisation-code",
+            verifier="verifier",
+            redirect_uri="http://127.0.0.1:41234",
+            transport=transport,
+        )
+
+    error = raised.value
+    assert error.code == ErrorCode.NOT_AUTHENTICATED
+    assert error.exit_code == EXIT_REFUSAL
+    assert marker not in error.message
+    assert marker not in error.remedy
+    assert marker not in json.dumps(error.envelope())
+    assert marker not in str(error)
 
 
 # --------------------------------------------------------------------------- #

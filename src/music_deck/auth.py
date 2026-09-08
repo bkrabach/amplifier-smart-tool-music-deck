@@ -516,8 +516,7 @@ def exchange_code(
     if response.status >= 400 or not isinstance(payload, dict):
         raise MusicDeckError(
             ErrorCode.NOT_AUTHENTICATED,
-            "Spotify refused the authorisation code "
-            f"({response.status}): {_error_text(payload)}",
+            "Spotify refused the authorisation code.",
             "Run `music-deck login` again. If it keeps failing, check that the "
             "client ID belongs to an app whose registered redirect URI is exactly "
             f"{redirect_uri} -- `music-deck check` reports the value music-deck "
@@ -567,10 +566,8 @@ def refresh_token_document(
     if response.status >= 400 or not isinstance(payload, dict):
         raise MusicDeckError(
             ErrorCode.REAUTHORIZATION_REQUIRED,
-            "Spotify rejected the refresh token "
-            f"({response.status}): {_error_text(payload)}. Spotify's own guidance "
-            "is to discard it and send the user through authorisation again "
-            "rather than retry.",
+            "Spotify rejected the refresh token. Spotify's own guidance is to "
+            "discard it and send the user through authorisation again rather than retry.",
         )
     authorized_at = _parse_moment(token.get("authorized_at")) or now()
     return _token_document(

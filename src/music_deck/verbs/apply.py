@@ -245,8 +245,7 @@ def _target(target: dict[str, Any], api: SpotifyClient) -> dict[str, Any]:
         raise MusicDeckError(
             "spotify_error",
             "Spotify accepted `POST /me/playlists` but its answer carried no "
-            f"playlist id, so there is nothing to add the plan's items to: "
-            f"{created!r}",
+            "playlist id, so there is nothing to add the plan's items to.",
             "Run `music-deck playlists` to see whether the playlist was created, "
             "then `music-deck apply` again or add to it directly.",
         )
