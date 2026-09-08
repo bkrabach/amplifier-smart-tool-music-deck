@@ -94,10 +94,8 @@ class NoBrowserError(MusicDeckError):
     """No browser opened, no terminal to hand the URL to, and ``--no-browser``
     was not asked for.
 
-    Deliberately not one of ``cli.v1`` Core 6's frozen codes: it describes the
-    machine music-deck is running on, not the state of the Spotify account, and
-    inventing a frozen-looking name would fork a vocabulary this lane does not
-    own. It exits ``1`` and says exactly what to do instead.
+    ``no_browser`` is a contracted precondition refusal in ``refusals.v1`` Core
+    7. It exits ``2`` and says exactly what to do instead.
     """
 
     def __init__(self, url: str) -> None:
@@ -251,7 +249,7 @@ def login(
     if "error" in query:
         raise MusicDeckError(
             ErrorCode.NOT_AUTHENTICATED,
-            f"Spotify did not authorise music-deck: {query['error']}.",
+            "Spotify did not authorise music-deck.",
             "Run `music-deck login` again and accept the permissions Spotify asks "
             "for.",
         )

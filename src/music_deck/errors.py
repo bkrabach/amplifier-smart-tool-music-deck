@@ -7,57 +7,31 @@ exits with*, so those two answers cannot drift apart across verbs.
 
 Three things live here, in the order a caller meets them:
 
-1. ``ErrorCode`` -- the ten frozen codes of ``cli.v1`` Core 6, verbatim, plus
-   the two codes that clause does not cover (see "Codes outside the frozen
-   vocabulary" below).
+1. ``ErrorCode`` -- every code in the closed vocabulary in
+   ``refusals.v1`` Core 2 through Core 8.
 2. ``error_envelope`` / ``MusicDeckError`` -- the one failure shape of
    ``cli.v1`` Core 4: ``{"error": {"code", "message", "remedy"}}``.
 3. ``exit_code_for`` -- the mapping onto ``cli.v1`` Core 5's four exit codes.
 
 Contracts served: ``cli.v1`` Core 4 (one JSON document per result), Core 5
-(exit codes), Core 6 (the frozen refusal vocabulary).
+(exit codes), and ``refusals.v1`` Core 1 (the closed public vocabulary).
 
-Codes outside the frozen vocabulary
------------------------------------
-``cli.v1`` Core 6 freezes twelve *refusal* codes. Two failures a caller can
-actually provoke are not refusals and are therefore not in that list, but Core 4
-still requires every failure to carry a code:
-
-* ``usage`` -- a malformed invocation: an unknown verb, a missing argument, a
-  bad value. Core 5 names "usage, or invalid input" as its own exit-2 category,
-  distinct from a refusal, so this code takes the word Core 5 itself uses.
-* ``not_implemented`` -- scaffolding. A verb that ``cli.v1`` Core 2 names but
-  whose lane has not landed yet refuses loudly rather than pretending to work.
-  Every one of these disappears as its lane lands; none is part of the promised
-  surface, and no caller should ever branch on it.
-
-Both are marked in ``FROZEN_CODES`` by their absence: that frozenset is exactly
-Core 6's twelve, and it is what a conformance fixture should enumerate.
-
-Two codes that used to sit here have since been ratified into Core 6 itself, on
-2026-09-06, and moved up into ``FROZEN_CODES`` where the clause now names them:
-
-* ``port_unavailable`` -- ``login``'s registered loopback port is already in
-  use, so it refuses naming the port rather than binding another Spotify would
-  reject (added to Core 6 at ``4f4fbf6``).
-* ``cancelled`` -- the caller interrupted an interactive wait. Core 6: "A person
-  stopping the tool is a refusal, never a traceback" (added at ``fab12dc``).
+``FROZEN_CODES`` keeps its established public name for compatibility. It is the
+complete public registry, rather than the old twelve-code subset from before the
+vocabulary moved into ``refusals.v1``. Adapter-only diagnostics are projected
+here, at construction time, so a ``MusicDeckError`` a library caller catches is
+already public-safe. Only fixed labels named in this module can survive as
+diagnostics; an arbitrary code, message, remedy, or nested payload never becomes
+part of an envelope, an exception string, or stderr.
 
 How the exit codes were derived
 -------------------------------
 ``cli.v1`` Core 5 gives four codes: ``0`` success, ``1`` failure, ``2``
 refusal / usage / invalid input, ``3`` no provider configured (model-backed verb
 only), and says "all domain richness lives in ``error.code``, not in more exit
-codes".
-
-Core 6 calls its twelve codes "the refusal vocabulary". Refusals exit ``2``, so
-all map to ``2``; Core 6's own text confirms this for the one code it annotates
-(``invalid_plan`` -- "exit 2"). ``usage`` is Core 5's own second exit-2
-category. Exit ``1`` is what is left: a genuine failure with no frozen code --
-an unreadable file, an upstream fault, an unhandled exception -- and the
-scaffolding ``not_implemented``. Exit ``3`` belongs to ``plan`` alone
-(``cli.v1`` Core 3) and is reached through ``NoProviderError``, never through a
-frozen code.
+codes". The explicit table below preserves that distinction: ``spotify_error``,
+``internal_error``, and ``not_implemented`` are failures (1);
+``no_provider_configured`` is 3; every other contracted code is a refusal (2).
 """
 
 from __future__ import annotations
@@ -83,32 +57,40 @@ EXIT_NO_PROVIDER: Final = 3
 
 
 # --------------------------------------------------------------------------- #
-# The refusal vocabulary -- cli.v1 Core 6, verbatim and frozen
+# The public vocabulary -- refusals.v1, closed and frozen
 # --------------------------------------------------------------------------- #
 class ErrorCode:
-    """Every code music-deck may put in an error envelope.
+    """Every code music-deck may put in an error envelope."""
 
-    The twelve in ``FROZEN_CODES`` are frozen by ``cli.v1`` Core 6: their
-    spelling is part of the promise, and a caller may branch on them. The
-    remaining two are not (see the module docstring).
-    """
-
-    # -- the frozen twelve, in Core 6's own order --------------------------- #
+    # -- authorization ------------------------------------------------------- #
     NOT_AUTHENTICATED: Final = "not_authenticated"
     REAUTHORIZATION_REQUIRED: Final = "reauthorization_required"
     NOT_ALLOWLISTED: Final = "not_allowlisted"
+
+    # -- account and device -------------------------------------------------- #
     PREMIUM_REQUIRED: Final = "premium_required"
     NO_ACTIVE_DEVICE: Final = "no_active_device"
-    CANCELLED: Final = "cancelled"
+
+    # -- quota and partial work --------------------------------------------- #
     RATE_LIMITED: Final = "rate_limited"
     QUOTA_EXCEEDED: Final = "quota_exceeded"
     PARTIAL_RESULT: Final = "partial_result"
-    PORT_UNAVAILABLE: Final = "port_unavailable"
-    PLAYLIST_ITEMS_UNAVAILABLE: Final = "playlist_items_unavailable"
+
+    # -- caller input -------------------------------------------------------- #
+    USAGE: Final = "usage"
+    INVALID_INPUT: Final = "invalid_input"
     INVALID_PLAN: Final = "invalid_plan"
 
-    # -- not frozen; see the module docstring ------------------------------- #
-    USAGE: Final = "usage"
+    # -- tool preconditions -------------------------------------------------- #
+    NO_PROVIDER_CONFIGURED: Final = "no_provider_configured"
+    PORT_UNAVAILABLE: Final = "port_unavailable"
+    NO_BROWSER: Final = "no_browser"
+    CANCELLED: Final = "cancelled"
+
+    # -- upstream and tool failures ----------------------------------------- #
+    SPOTIFY_ERROR: Final = "spotify_error"
+    PLAYLIST_ITEMS_UNAVAILABLE: Final = "playlist_items_unavailable"
+    INTERNAL_ERROR: Final = "internal_error"
     NOT_IMPLEMENTED: Final = "not_implemented"
 
 
@@ -119,16 +101,23 @@ FROZEN_CODES: Final[frozenset[str]] = frozenset(
         ErrorCode.NOT_ALLOWLISTED,
         ErrorCode.PREMIUM_REQUIRED,
         ErrorCode.NO_ACTIVE_DEVICE,
-        ErrorCode.CANCELLED,
         ErrorCode.RATE_LIMITED,
         ErrorCode.QUOTA_EXCEEDED,
         ErrorCode.PARTIAL_RESULT,
-        ErrorCode.PORT_UNAVAILABLE,
-        ErrorCode.PLAYLIST_ITEMS_UNAVAILABLE,
+        ErrorCode.USAGE,
+        ErrorCode.INVALID_INPUT,
         ErrorCode.INVALID_PLAN,
+        ErrorCode.NO_PROVIDER_CONFIGURED,
+        ErrorCode.PORT_UNAVAILABLE,
+        ErrorCode.NO_BROWSER,
+        ErrorCode.CANCELLED,
+        ErrorCode.SPOTIFY_ERROR,
+        ErrorCode.PLAYLIST_ITEMS_UNAVAILABLE,
+        ErrorCode.INTERNAL_ERROR,
+        ErrorCode.NOT_IMPLEMENTED,
     }
 )
-"""Exactly the twelve codes ``cli.v1`` Core 6 freezes, in that clause's order."""
+"""Exactly the closed public vocabulary in ``contracts/refusals.v1.md``."""
 
 
 REMEDIES: Final[dict[str, str]] = {
@@ -170,10 +159,27 @@ REMEDIES: Final[dict[str, str]] = {
         "Fix the plan at the path named in `message`, then run `music-deck apply` again."
     ),
     ErrorCode.USAGE: "Run `music-deck --help` for the complete listing of verbs.",
+    ErrorCode.INVALID_INPUT: (
+        "Correct the value named in `message`, then run the command again."
+    ),
+    ErrorCode.NO_PROVIDER_CONFIGURED: (
+        "Run `music-deck check` to identify the missing model provider, SDK, or "
+        "credential, then follow its setup guidance."
+    ),
     ErrorCode.PORT_UNAVAILABLE: (
         "Free the port named in `message`, or pick another with `music-deck setup "
         "--port <n>` and register http://127.0.0.1:<n> as your Spotify app's "
         "redirect URI. Run `music-deck check` to see which port music-deck will use."
+    ),
+    ErrorCode.NO_BROWSER: (
+        "Run `music-deck login --no-browser` and open the URL it prints from a "
+        "machine with a browser, or run it from an interactive terminal."
+    ),
+    ErrorCode.SPOTIFY_ERROR: (
+        "Run `music-deck check` to report the tool's state, then try again."
+    ),
+    ErrorCode.INTERNAL_ERROR: (
+        "Run `music-deck check` to report the tool's state, then report this error."
     ),
     ErrorCode.NOT_IMPLEMENTED: (
         "This verb is declared by the CLI contract but not built yet. Run "
@@ -184,9 +190,67 @@ REMEDIES: Final[dict[str, str]] = {
 """The remedy each code carries when the caller does not supply a better one."""
 
 
+# These labels are implementation details, not codes a caller may branch on.
+# They are an allow-list rather than a pass-through: engine and transport errors
+# can carry arbitrary strings (including credentials), and a valid-looking
+# *public* code does not make their accompanying data trustworthy.
+INTERNAL_DIAGNOSTIC_CODES: Final[frozenset[str]] = frozenset(
+    {
+        "approval_denied",
+        "approval_timeout",
+        "approval_unavailable",
+        "engine_failed",
+        "model_did_not_run",
+        "model_not_selected",
+        "network_unreachable",
+        "provider_failed",
+        "provider_unavailable",
+        "removed_endpoint",
+        "selector_rejected",
+        "tool_failed",
+    }
+)
+
+_ENGINE_SUBSTRATE_DIAGNOSTICS: Final[frozenset[str]] = frozenset(
+    {"model_not_selected", "provider_unavailable", "selector_rejected"}
+)
+
+_INTERNAL_EXPLANATIONS: Final[dict[str, tuple[str, str]]] = {
+    "network_unreachable": (
+        "music-deck could not reach Spotify.",
+        "Check the network connection and run the command again.",
+    ),
+    "removed_endpoint": (
+        "music-deck refused to construct a Spotify endpoint that Spotify has withdrawn.",
+        "This is a defect in music-deck, not something you did. Run `music-deck check` "
+        "and report this error.",
+    ),
+    "model_did_not_run": (
+        "music-deck's model engine did not return a usable response.",
+        "Run `music-deck check` to confirm the model setup, then run the command again.",
+    ),
+}
+
+_GENERIC_INTERNAL: Final[tuple[str, str]] = (
+    "music-deck encountered an internal error.",
+    "Run `music-deck check` to report the tool's state, then report this error.",
+)
+
+
 _EXIT_BY_CODE: Final[dict[str, int]] = {
-    **{code: EXIT_REFUSAL for code in FROZEN_CODES},
-    ErrorCode.USAGE: EXIT_REFUSAL,
+    **{
+        code: EXIT_REFUSAL
+        for code in FROZEN_CODES
+        - {
+            ErrorCode.NO_PROVIDER_CONFIGURED,
+            ErrorCode.SPOTIFY_ERROR,
+            ErrorCode.INTERNAL_ERROR,
+            ErrorCode.NOT_IMPLEMENTED,
+        }
+    },
+    ErrorCode.NO_PROVIDER_CONFIGURED: EXIT_NO_PROVIDER,
+    ErrorCode.SPOTIFY_ERROR: EXIT_FAILURE,
+    ErrorCode.INTERNAL_ERROR: EXIT_FAILURE,
     ErrorCode.NOT_IMPLEMENTED: EXIT_FAILURE,
 }
 
@@ -207,6 +271,99 @@ def remedy_for(code: str) -> str:
     )
 
 
+def _public_error_parts(
+    code: str, message: str, remedy: str | None, extra: dict[str, Any]
+) -> tuple[str, str, str | None, dict[str, Any]]:
+    """Keep unreviewed adapter input out of every public error surface."""
+    if code in FROZEN_CODES:
+        return code, message, remedy, extra
+    diagnostic = code if code in INTERNAL_DIAGNOSTIC_CODES else None
+    public_message, public_remedy = _INTERNAL_EXPLANATIONS.get(
+        diagnostic or "", _GENERIC_INTERNAL
+    )
+    public_extra = {"diagnostic_code": diagnostic} if diagnostic is not None else {}
+    return (
+        ErrorCode.INTERNAL_ERROR,
+        public_message,
+        public_remedy,
+        public_extra,
+    )
+
+
+def internal_error(
+    diagnostic_code: str | None = None, **safe_extra: Any
+) -> "MusicDeckError":
+    """Construct an internal error from a reviewed diagnostic and safe context.
+
+    ``safe_extra`` is deliberately restricted to the removed-endpoint facts,
+    whose values come from the local endpoint registry. Other diagnostics retain
+    only their fixed label. This is the sole way an adapter diagnostic gets
+    contextual fields into a public envelope.
+    """
+    message, remedy = _INTERNAL_EXPLANATIONS.get(
+        diagnostic_code or "", _GENERIC_INTERNAL
+    )
+    extra: dict[str, Any] = {}
+    if diagnostic_code in INTERNAL_DIAGNOSTIC_CODES:
+        extra["diagnostic_code"] = diagnostic_code
+    if diagnostic_code in {
+        "approval_denied",
+        "approval_timeout",
+        "approval_unavailable",
+        "engine_failed",
+        "provider_failed",
+        "tool_failed",
+    }:
+        extra["engine_code"] = diagnostic_code
+    if diagnostic_code == "removed_endpoint":
+        method = safe_extra.get("method")
+        path = safe_extra.get("path")
+        withdrawn = safe_extra.get("withdrawn")
+        replacement = safe_extra.get("replacement")
+        if isinstance(method, str) and method in {"GET", "POST", "PUT", "DELETE"}:
+            extra["method"] = method
+        if (
+            isinstance(path, str)
+            and "?" not in path
+            and len(path) <= 200
+            and all(character.isalnum() or character in "/_-.{}" for character in path)
+        ):
+            extra["path"] = path
+        if isinstance(withdrawn, str) and withdrawn in {"November 2024", "February 2026"}:
+            extra["withdrawn"] = withdrawn
+        if (
+            isinstance(replacement, str)
+            and len(replacement) <= 200
+            and "`" not in replacement
+        ):
+            extra["replacement"] = replacement
+    return MusicDeckError(ErrorCode.INTERNAL_ERROR, message, remedy, **extra)
+
+
+def project_engine_error(error: "MusicDeckError") -> "MusicDeckError":
+    """Project an engine-originated error through the same safe boundary.
+
+    The engine's message/remedy/extras are never reused. The original private
+    code was normalised when ``MusicDeckError`` was built; a recognised label is
+    retained in ``diagnostic_code`` solely so substrate failures can still map
+    to the contracted ``no_provider_configured`` refusal.
+    """
+    diagnostic = getattr(error, "diagnostic_code", None)
+    if diagnostic in _ENGINE_SUBSTRATE_DIAGNOSTICS:
+        return NoProviderError(
+            "music-deck could not use the configured model provider.",
+            "Run `music-deck check` to identify the missing model provider, SDK, or "
+            "credential, then follow its setup guidance.",
+        )
+    if error.code in FROZEN_CODES and error.code != ErrorCode.INTERNAL_ERROR:
+        return MusicDeckError(
+            error.code,
+            "The model engine stopped before music-deck could complete the request.",
+            remedy_for(error.code),
+        )
+    return internal_error(diagnostic)
+
+
 # --------------------------------------------------------------------------- #
 # The envelope -- cli.v1 Core 4
 # --------------------------------------------------------------------------- #
@@ -219,6 +376,7 @@ def error_envelope(
     for ``rate_limited``, ``completeness`` for ``partial_result``, ``path`` for
     ``invalid_plan`` -- alongside the three required keys, never instead of them.
     """
+    code, message, remedy, extra = _public_error_parts(code, message, remedy, dict(extra))
     error: dict[str, Any] = {
         "code": code,
         "message": message,
@@ -242,11 +400,17 @@ class MusicDeckError(Exception):
         remedy: str | None = None,
         **extra: Any,
     ) -> None:
-        super().__init__(message)
-        self.code = code
-        self.message = message
-        self.remedy = remedy if remedy is not None else remedy_for(code)
-        self.extra = extra
+        public_code, public_message, public_remedy, public_extra = _public_error_parts(
+            code, message, remedy, dict(extra)
+        )
+        super().__init__(public_message)
+        self.code = public_code
+        self.message = public_message
+        self.remedy = (
+            public_remedy if public_remedy is not None else remedy_for(public_code)
+        )
+        self.extra = public_extra
+        self.diagnostic_code = public_extra.get("diagnostic_code")
 
     @property
     def exit_code(self) -> int:
@@ -259,8 +423,8 @@ class MusicDeckError(Exception):
 class NoProviderError(MusicDeckError):
     """No usable model substrate for a model-backed verb -- ``cli.v1`` Core 3, exit ``3``.
 
-    Kept distinct from the frozen refusal codes because its exit code is the one
-    thing Core 5 gives its own number to.
+    Kept as a class so callers can catch the model-preflight condition directly;
+    its code is also a member of the closed public registry.
     """
 
     def __init__(self, message: str, remedy: str) -> None:

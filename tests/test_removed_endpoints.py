@@ -28,6 +28,7 @@ from pathlib import Path
 import pytest
 from spotify_fakes import FakeTransport, install_token, token_document, use_fake_transport
 
+from music_deck.errors import EXIT_FAILURE, ErrorCode
 from music_deck.http import REMOVED_ENDPOINTS, RemovedEndpointError, check_removed
 from music_deck.verbs.auth_verbs import spotify_client
 
@@ -162,6 +163,10 @@ def test_the_guard_refuses_a_withdrawn_endpoint_before_any_request(
         spotify_client().request(method, path)
 
     assert transport.requests == [], "the guard must run before the request is built"
+    assert raised.value.code == ErrorCode.INTERNAL_ERROR
+    assert raised.value.exit_code == EXIT_FAILURE
+    assert raised.value.envelope()["error"]["code"] == ErrorCode.INTERNAL_ERROR
+    assert raised.value.extra["diagnostic_code"] == "removed_endpoint"
     assert raised.value.extra["replacement"]
     assert raised.value.extra["withdrawn"] in {"November 2024", "February 2026"}
 
@@ -207,6 +212,23 @@ def test_every_entry_in_the_table_names_when_it_went_and_what_replaced_it():
         assert removed.name
         assert removed.withdrawn in {"November 2024", "February 2026"}
         assert removed.replacement
+
+
+def test_a_removed_endpoint_keeps_only_redacted_registry_context():
+    marker = "fixture-query-secret-must-not-escape"
+
+    with pytest.raises(RemovedEndpointError) as raised:
+        check_removed("GET", f"/tracks?access_token={marker}")
+
+    error = raised.value
+    envelope = error.envelope()["error"]
+    assert envelope["code"] == ErrorCode.INTERNAL_ERROR
+    assert envelope["method"] == "GET"
+    assert envelope["path"] == "/tracks"
+    assert envelope["withdrawn"] == "February 2026"
+    assert envelope["replacement"] == "/tracks/{id}, one request per item"
+    assert marker not in str(error)
+    assert marker not in str(envelope)
 
 
 def test_the_guard_covers_every_family_the_contract_lists():
