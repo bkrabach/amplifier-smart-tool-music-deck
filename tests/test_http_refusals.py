@@ -32,7 +32,7 @@ from spotify_fakes import (
     use_fake_transport,
 )
 
-from music_deck.errors import EXIT_REFUSAL, EXIT_SUCCESS, ErrorCode
+from music_deck.errors import EXIT_FAILURE, EXIT_REFUSAL, EXIT_SUCCESS, ErrorCode
 from music_deck.verbs.auth_verbs import spotify_client
 
 ME_PAYLOAD = {
@@ -404,6 +404,28 @@ def test_429_with_reason_quota_exceeded_is_never_retried(
     assert "will not clear it" in error["remedy"]
     assert slept == [], "a quota is not a wait"
     assert len(transport.requests) == 1
+
+
+def test_an_unclassified_spotify_error_never_echoes_remote_payload(
+    monkeypatch, tmp_path, capsys, transport
+):
+    """Remote response text is not safe merely because spotify_error is named."""
+    marker = "fixture-spotify-secret-must-not-escape"
+    install_token(monkeypatch, tmp_path, token_document())
+    transport.queue(json_response(500, spotify_error(500, marker)))
+
+    code, document, stderr = run_probe(
+        monkeypatch,
+        capsys,
+        lambda: spotify_client().get(f"/me?access_token={marker}"),
+    )
+
+    assert code == EXIT_FAILURE
+    error = envelope_of(document)
+    assert error["code"] == ErrorCode.SPOTIFY_ERROR
+    assert error["endpoint"] == "/me"
+    assert marker not in json.dumps(document)
+    assert marker not in stderr
 
 
 # --------------------------------------------------------------------------- #

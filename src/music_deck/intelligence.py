@@ -73,7 +73,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Final, Iterator, Protocol
 
-from music_deck.errors import MusicDeckError, NoProviderError
+from music_deck.errors import MusicDeckError, NoProviderError, internal_error, project_engine_error
 from music_deck.setup_guide import install_with
 
 # --------------------------------------------------------------------------- #
@@ -658,13 +658,13 @@ class AmplifierIntelligence:
         if default is not None:
             return default
 
-        raise MusicDeckError(
-            "model_not_selected",
+        raise NoModelSubstrate(
+            "model",
             f"Model provider {provider!r} has no model music-deck can pick for "
             f"you: an Azure OpenAI selection is the deployment name you chose "
             f"when you created it, so only you know it.",
             f"Set {MODEL_ENV_VAR} to that deployment's model id and run again.",
-            provider=provider,
+            provider,
         )
 
     def run(self, request: ModelRequest) -> ModelResult:
@@ -787,13 +787,7 @@ class AmplifierIntelligence:
             # A turn that succeeded and said nothing is not an answer. Handing
             # the empty string on would present a model that never spoke as one
             # that answered badly, three layers down in the plan validator.
-            raise MusicDeckError(
-                "model_did_not_run",
-                f"The agent engine reported a successful turn with no reply "
-                f"from {provider}.",
-                "Run `music-deck check` to confirm the provider is configured, "
-                "then run `music-deck plan` again.",
-            )
+            raise internal_error("model_did_not_run")
 
         tokens_in, tokens_out, cost, actual_model = _read_usage(result.usage)
         return ModelResult(
@@ -843,21 +837,9 @@ def _engine_failure(failure: Any, provider: str, model: str) -> MusicDeckError:
     provider and model it was asked for, and where the caller sets them.
     """
     code = str(getattr(failure, "code", "") or "engine_failed")
-    message = str(getattr(failure, "message", "") or failure)
-    remedy = str(getattr(failure, "remedy", "") or "").strip()
-    return MusicDeckError(
-        code,
-        f"The agent engine refused to run a turn on {provider}/{model}: {message}",
-        (
-            f"{remedy} music-deck asked for provider {provider!r} and model "
-            f"{model!r}; pin either with {PROVIDER_ENV_VAR} and {MODEL_ENV_VAR}. "
-            f"Settings named {HOST_SETTING_PREFIX}* in your shell are not "
-            f"involved: music-deck withholds that whole namespace for the turn, "
-            f"so this failure is about the provider or the model, not about them."
-        ).strip(),
-        provider=provider,
-        model=model,
-    )
+    # Constructing the error is the security boundary: the engine fields are
+    # untrusted, including when its code resembles one of our public codes.
+    return project_engine_error(MusicDeckError(code, "", ""))
 
 
 def _turn_failure(result: Any, provider: str, model: str) -> MusicDeckError:
@@ -871,14 +853,7 @@ def _turn_failure(result: Any, provider: str, model: str) -> MusicDeckError:
     failure = getattr(result, "error", None)
     state = str(getattr(result, "state", "unknown"))
     if failure is None:
-        return MusicDeckError(
-            "model_did_not_run",
-            f"The agent engine ended the turn {state!r} on {provider}/{model} "
-            f"without saying why.",
-            "Run `music-deck check`, then run `music-deck plan` again.",
-            provider=provider,
-            model=model,
-        )
+        return internal_error("model_did_not_run")
     return _engine_failure(failure, provider, model)
 
 

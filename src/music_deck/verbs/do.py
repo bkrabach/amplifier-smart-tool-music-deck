@@ -100,10 +100,14 @@ import json
 import re
 from typing import Any, Final, Mapping, Sequence
 
-from music_deck.errors import ErrorCode, MusicDeckError
+from music_deck.errors import (
+    FROZEN_CODES,
+    ErrorCode,
+    MusicDeckError,
+    project_engine_error,
+)
 from music_deck.http import SpotifyClient
 from music_deck.intelligence import (
-    MISSING_PROVIDER,
     Intelligence,
     ModelRequest,
     NoModelSubstrate,
@@ -733,7 +737,7 @@ class _Run:
             raise MusicDeckError(
                 "spotify_error",
                 "Spotify accepted `POST /me/playlists` but its answer carried no "
-                f"playlist id, so there is nothing to add tracks to: {created!r}",
+                "playlist id, so there is nothing to add tracks to.",
                 "Run `music-deck playlists` to see whether the playlist was "
                 "created, then run `music-deck do` again.",
             )
@@ -1011,112 +1015,24 @@ def _preflight(
 # --------------------------------------------------------------------------- #
 # refusals.v1 Core 1 -- the vocabulary is closed, and this is what closes it
 # --------------------------------------------------------------------------- #
-NAMED_IN_REFUSALS: Final[frozenset[str]] = frozenset(
-    {
-        # Core 2
-        "not_authenticated",
-        "reauthorization_required",
-        "not_allowlisted",
-        # Core 3
-        "premium_required",
-        "no_active_device",
-        # Core 4
-        "rate_limited",
-        "quota_exceeded",
-        # Core 5
-        "partial_result",
-        # Core 6
-        "usage",
-        "invalid_input",
-        "invalid_plan",
-        # Core 7
-        "no_provider_configured",
-        "port_unavailable",
-        "no_browser",
-        "cancelled",
-        # Core 8
-        "spotify_error",
-        "playlist_items_unavailable",
-        "internal_error",
-        "not_implemented",
-    }
-)
+NAMED_IN_REFUSALS: Final[frozenset[str]] = FROZEN_CODES
 """Every code ``contracts/refusals.v1.md`` names, clause by clause.
 
-Written out rather than imported because ``music_deck.errors`` still enumerates
-``cli.v1`` Core 6's twelve, from before the vocabulary was split out into its own
-contract on 2026-09-06 -- and that module belongs to another lane. A test sweeps
-this set against the contract file, so the copy cannot drift silently.
+The compatibility name remains for callers that imported it while this was the
+only adapter which held the complete vocabulary. The registry itself belongs in
+``music_deck.errors``; importing it prevents the two surfaces drifting apart.
 """
-
-_SUBSTRATE_CODES: Final[frozenset[str]] = frozenset(
-    {
-        "selector_rejected",
-        "model_not_selected",
-        "provider_unavailable",
-    }
-)
-"""Engine codes a **caller** can act on: the model id is stale, the deployment
-was never named, the provider cannot be reached.
-
-``refusals.v1`` Core 7 already has the right words for that -- "a model-backed
-verb without a usable substrate" -- so they take ``no_provider_configured`` and
-its exit 3, and the remedy still names ``MUSIC_DECK_MODEL`` the way the seam
-wrote it.
-
-``provider_failed`` is deliberately **not** here. The engine raises it when a
-provider requests an undeclared tool, repeats a call id, or sends undecodable
-arguments -- none of which a caller can fix by setting an environment variable,
-and the first of which was music-deck's own defect on 2026-09-06.
-"""
-
 
 def _named_refusal(failure: MusicDeckError) -> MusicDeckError:
-    """One engine failure, wearing a code ``refusals.v1`` actually names.
+    """Project an engine failure through the shared public-error boundary.
 
-    ``music_deck.intelligence`` carries the engine's own ``code`` through
-    verbatim, which is right for ``plan`` -- the layer that knows why a turn
-    failed is the layer that failed it, and ``tests/test_engine_boot.py`` freezes
-    that pass-through. But ``refusals.v1`` Core 1 says the *emitted* vocabulary
-    is closed, and ``provider_failed`` is in no contract. That is the drift this
-    function exists to stop, and it is why the first live ``do`` printed a code
-    its caller could not look up.
-
-    Three outcomes:
-
-    * a code :data:`NAMED_IN_REFUSALS` already names -> **unchanged**. Nothing
-      here relabels ``rate_limited`` or ``no_provider_configured``.
-    * :data:`_SUBSTRATE_CODES` -> ``no_provider_configured`` (Core 7), exit 3.
-    * everything else -> ``internal_error`` (Core 8, "a defect in music-deck; it
-      says so plainly rather than blaming the caller"). ``provider_failed``
-      lands here, and so does an approval that did not resolve to *allow*:
-      music-deck sets that policy itself, so an ``approval_denied`` or
-      ``approval_unavailable`` reaching a caller is music-deck's own defect and
-      never theirs. That is the difference between a named refusal and the
-      traceback this would otherwise be.
-
-    The engine's own code is never thrown away -- it travels in ``engine_code``,
-    so a bug report still names the thing that actually failed.
-
-    A mapping and not a new code, because ``contracts/`` is not this lane's to
-    edit. DONE.md records the gap it papers over: the vocabulary has no code for
-    "the model substrate failed mid-turn", and ``internal_error`` is a widening
-    of Core 8 to cover a case that is sometimes the provider's fault rather than
-    music-deck's.
+    ``errors.project_engine_error`` owns the mapping for both smart verbs:
+    recognized substrate failures refuse ``no_provider_configured``; other
+    failures use a contracted code and authored message/remedy. Only allowlisted
+    diagnostic labels survive. Raw engine messages, remedies, and extra fields
+    are not safe to forward, even after relabeling their code.
     """
-    code = failure.code
-    if code in NAMED_IN_REFUSALS:
-        return failure
-    if code in _SUBSTRATE_CODES:
-        return NoModelSubstrate(MISSING_PROVIDER, failure.message, failure.remedy)
-    extra = {key: value for key, value in failure.extra.items() if key != "engine_code"}
-    return MusicDeckError(
-        "internal_error",
-        failure.message,
-        failure.remedy,
-        engine_code=code,
-        **extra,
-    )
+    return project_engine_error(failure)
 
 
 # --------------------------------------------------------------------------- #
@@ -1141,8 +1057,9 @@ def _assert_nothing_leaked(
     if not report.ok:
         raise MusicDeckError(
             "internal_error",
-            "music-deck refused to hand back a result whose prompt or tool "
-            f"result carried a credential.\n{report.describe()}",
+            "music-deck refused to hand back a result whose prompt or tool result "
+            "carried a credential (boundary.v1 Core 2): the access token, refresh "
+            "token, and client ID must never reach a model.",
             "This is a defect in music-deck, not in your invocation. Report it "
             "with the message above; no access token, refresh token or client "
             "ID should ever be able to reach a model.",
