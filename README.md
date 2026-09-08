@@ -12,6 +12,14 @@ That puts `music-deck` on your PATH. Nothing else is needed to run it: the
 deterministic verbs need no model provider and no provider SDK, and `check`
 needs no credentials and no network.
 
+To use the model-backed `plan` and `do` verbs with Anthropic, install their
+complete runtime in the tool's own environment, then set your key:
+
+```
+uv tool install --force --with anthropic --with "amplifier-agent @ git+https://github.com/microsoft/amplifier-agent@v1#subdirectory=packages/python" git+https://github.com/bkrabach/amplifier-smart-tool-music-deck
+export ANTHROPIC_API_KEY=<your key>
+```
+
 ## From nothing to ready
 
 ```
@@ -26,6 +34,11 @@ and it writes prose a person reads: what is missing, the steps that close *that*
 gap, and the single next command to run — not the whole orientation every time,
 which is `music-deck setup --guide`. `--json` returns the same content structured
 for anything that parses. `login` is the only interactive verb there is.
+
+Over SSH, run `music-deck login --no-browser` on the tool host. Before opening
+the authorisation URL it prints, run the exact `ssh -L` command `login` prints
+from the browser machine. The browser callback then reaches the loopback
+listener on the tool host.
 
 Then, if you just want the thing done:
 
@@ -74,7 +87,7 @@ music-deck setup --guide
 ```
 
 and read it: the Development Mode ceiling, creating the app, the exact redirect
-URI (`http://127.0.0.1`, no port, never `localhost`), copying the client ID
+URI (`http://127.0.0.1:8888`, port included, never `localhost`), copying the client ID
 (never the client secret), the five-user allowlist, and signing in. It works
 offline, from any install, with no checkout anywhere. Plain `music-deck setup`
 gives you the shorter version — only the steps for the gap you actually have.
@@ -109,17 +122,19 @@ who ran `uv tool install` has the package, not the repository.
   does not tell you what is left of it, which is why the ceilings are not
   optional.
 
-## Adding a model provider to a tool install
+## Model runtime for a tool install
 
 A `uv tool install` owns its own virtualenv, and `uv pip install` cannot reach
-inside it. To add a provider SDK:
+inside it. `plan` and `do` need both a provider SDK and the amplifier-agent
+engine; install both at once:
 
 ```
-uv tool install --force --with anthropic git+https://github.com/bkrabach/amplifier-smart-tool-music-deck
+uv tool install --force --with anthropic --with "amplifier-agent @ git+https://github.com/microsoft/amplifier-agent@v1#subdirectory=packages/python" git+https://github.com/bkrabach/amplifier-smart-tool-music-deck
+export ANTHROPIC_API_KEY=<your key>
 ```
 
-The refusal from `plan` or `do` names this command for you, with the right
-package in it.
+`music-deck check` reports whether the complete local runtime is ready. The
+refusal from `plan` or `do` names the matching command when it is not.
 
 ## Governance
 

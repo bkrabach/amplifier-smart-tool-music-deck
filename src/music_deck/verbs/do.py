@@ -394,7 +394,7 @@ def do(
 
     # cli.v1 Core 3: the refusal happens here, before any prompt exists.
     # Nothing above this line has assembled a character of prompt.
-    chosen = _preflight(engine, provider)
+    chosen = _preflight(engine, provider, model)
 
     run = _Run(brief, turn_ceiling, request_ceiling, client)
     # Named before the turn runs, so a run music-deck ends itself still reports
@@ -554,6 +554,7 @@ class _Run:
         # boundary.v1 Core 2 says a credential must not reach the model "in a
         # tool result" either, so what is checked has to be the string that was
         # actually returned -- kept here, not rebuilt from `history` later.
+        _assert_nothing_leaked((), [rendered])
         self.tool_results.append(rendered)
         return rendered
 
@@ -575,6 +576,7 @@ class _Run:
         prompt = assemble_prompt(
             self.brief, max_turns=self.max_turns, max_requests=self.max_requests
         )
+        _assert_nothing_leaked([prompt], ())
         self.transcript.append(prompt)
 
         try:
@@ -977,7 +979,9 @@ class _Run:
 # --------------------------------------------------------------------------- #
 # cli.v1 Core 3 -- the refusal, naming the verb the caller actually ran
 # --------------------------------------------------------------------------- #
-def _preflight(engine: Intelligence, provider: str | None) -> str:
+def _preflight(
+    engine: Intelligence, provider: str | None, model: str | None = None
+) -> str:
     """Establish a usable substrate and name it, or refuse naming ``do``.
 
     ``intelligence.preflight``'s own message still says "``plan`` is
@@ -994,7 +998,7 @@ def _preflight(engine: Intelligence, provider: str | None) -> str:
     substitution only fires when the message names ``plan``.
     """
     try:
-        return engine.preflight(provider)
+        return engine.preflight(provider, model)
     except NoModelSubstrate as refusal:
         corrected = refusal.message.replace("`plan`", "`do`")
         if corrected == refusal.message:

@@ -1,7 +1,7 @@
 """The model seam: one protocol, one shipped implementation, one refusal.
 
-``plan`` is the only verb that reaches a model (``cli.v1`` Core 3), and it
-reaches it only through the ``Intelligence`` protocol below. A capability
+``plan`` and ``do`` are the verbs that reach a model (``cli.v1`` Core 3), and
+they reach it only through the ``Intelligence`` protocol below. A capability
 depends on this protocol, never on a provider SDK, so swapping the model layer
 -- or standing in for it in a test -- means supplying a different object with
 these three members and passing it in. Nothing else changes.
@@ -152,7 +152,7 @@ ENGINE_REQUIREMENT: Final = (
     "amplifier-agent @ git+https://github.com/microsoft/amplifier-agent@v1"
     "#subdirectory=packages/python"
 )
-ENGINE_INSTALL_HINT: Final = install_with(f'"{ENGINE_REQUIREMENT}"')
+ENGINE_INSTALL_HINT: Final = install_with(ENGINE_REQUIREMENT)
 """How to install the engine, in the form the documented install method takes.
 
 ``cli.v1`` Core 4: a remedy "names what the reader HAS: a command their install
@@ -177,6 +177,11 @@ exactly the quiet cost that promise exists to prevent."""
 ENGINE_INSTALL_HINT_PIP: Final = f'uv pip install "{ENGINE_REQUIREMENT}"'
 """The same thing for a copy installed into a virtualenv with pip rather than as
 a uv tool. Offered second: the tool install is the documented method."""
+
+
+def runtime_install_command(provider: str) -> str:
+    """Install a provider SDK and the engine together in a tool environment."""
+    return install_with(PROVIDER_SDK_PACKAGE[provider], ENGINE_REQUIREMENT)
 
 
 # --------------------------------------------------------------------------- #
@@ -244,7 +249,7 @@ def without_host_settings() -> Iterator[tuple[str, ...]]:
 
     Narrow on purpose. It withholds one prefix, for the length of one turn, in a
     process that runs exactly one turn: ``run`` owns its own event loop and
-    ``plan`` is the only verb that gets here. It does not touch provider
+    only the model-backed verbs get here. It does not touch provider
     credentials (``ANTHROPIC_API_KEY`` and its siblings do not carry this
     prefix), which the engine reads from this same environment at the same
     moment and must still find.
@@ -351,7 +356,7 @@ class Intelligence(Protocol):
 
     implementation: str
 
-    def preflight(self, provider: str | None = None) -> str:
+    def preflight(self, provider: str | None = None, model: str | None = None) -> str:
         """Name the provider that will serve a request, or refuse.
 
         Called before any prompt is built, so a caller with nothing configured
@@ -393,10 +398,13 @@ class NoModelSubstrate(NoProviderError):
     out loud.
     """
 
-    def __init__(self, missing: str, message: str, remedy: str) -> None:
+    def __init__(
+        self, missing: str, message: str, remedy: str, provider: str | None = None
+    ) -> None:
         super().__init__(message, remedy)
         self.missing = missing
-        self.extra = {"missing": missing}
+        self.provider = provider
+        self.extra = {"missing": missing, **({"provider": provider} if provider else {})}
 
 
 # --------------------------------------------------------------------------- #
@@ -558,7 +566,7 @@ class AmplifierIntelligence:
 
     implementation = "amplifier-agent"
 
-    def preflight(self, provider: str | None = None) -> str:
+    def preflight(self, provider: str | None = None, model: str | None = None) -> str:
         """The provider that will serve a request, or ``NoModelSubstrate``.
 
         Order of questions is deliberate: which provider, then its credential,
@@ -592,7 +600,7 @@ class AmplifierIntelligence:
             if not credentialled:
                 raise NoModelSubstrate(
                     MISSING_PROVIDER,
-                    "`plan` is model-backed and no model provider is configured.",
+                    "`plan` and `do` are model-backed and no model provider is configured.",
                     "Set ANTHROPIC_API_KEY (or OPENAI_API_KEY, GOOGLE_API_KEY, "
                     f"AZURE_OPENAI_API_KEY), or pin one with {PROVIDER_ENV_VAR}. "
                     "Every other verb runs with no provider at all.",
@@ -601,19 +609,15 @@ class AmplifierIntelligence:
 
         absent = missing_package(chosen)
         if absent is not None:
-            extra = PROVIDER_EXTRA.get(chosen, chosen)
-            package = PROVIDER_SDK_PACKAGE.get(chosen, absent)
             raise NoModelSubstrate(
                 MISSING_PROVIDER_SDK,
                 f"Model provider {chosen!r} has a credential here but its Python "
                 f"SDK ({absent}) is not installed.",
-                f"Add it to music-deck's own environment: {install_with(package)}"
-                f" -- that is the form a `uv tool install` takes, and the only one "
-                f"that reaches the tool's virtualenv. If you installed music-deck "
-                f"into a virtualenv instead, the extra works there: "
-                f'uv pip install "music-deck[{extra}]". '
-                "It is an extra and not a base dependency because every verb except "
-                "`plan` runs without it.",
+                f"Add the complete runtime to music-deck's own environment: "
+                f"{runtime_install_command(chosen)}. That single `uv tool install` "
+                "adds both the SDK and engine to the tool's virtualenv. It is not a "
+                "base dependency because every deterministic verb runs without it.",
+                provider=chosen,
             )
 
         if not engine_installed():
@@ -621,10 +625,18 @@ class AmplifierIntelligence:
                 MISSING_ENGINE,
                 f"The amplifier-agent engine library ({ENGINE_PACKAGE}) is not "
                 f"installed, so there is nothing to run the turn.",
-                f"Add it to music-deck's own environment: {ENGINE_INSTALL_HINT}. "
-                f"In a virtualenv install instead: {ENGINE_INSTALL_HINT_PIP}.",
+                f"Add the complete runtime to music-deck's own environment: "
+                f"{runtime_install_command(chosen)}. That single `uv tool install` "
+                "adds both the SDK and engine to the tool's virtualenv.",
+                provider=chosen,
             )
 
+        try:
+            self.model_for(chosen, model)
+        except MusicDeckError as error:
+            raise NoModelSubstrate(
+                "model", error.message, error.remedy, provider=chosen
+            ) from error
         return chosen
 
     def model_for(self, provider: str, requested: str | None = None) -> str:
@@ -691,7 +703,7 @@ class AmplifierIntelligence:
         """
         import tempfile
 
-        provider = self.preflight(request.provider)
+        provider = self.preflight(request.provider, request.model)
         model = self.model_for(provider, request.model)
 
         # The engine import lives here, not at module level: cli.v1 Core 2
@@ -908,6 +920,7 @@ __all__ = [
     "default_intelligence",
     "engine_installed",
     "missing_package",
+    "runtime_install_command",
     "ToolSpec",
     "ToolStop",
     "resolve",

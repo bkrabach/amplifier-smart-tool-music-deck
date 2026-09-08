@@ -20,7 +20,8 @@ no CI job and no mock has:
    `docs/spotify-app.md`.
 2. A **Spotify Premium account** that owns that app and is on its allowlist.
 3. A **browser**, for the one interactive step (`login`, PKCE).
-4. A **model provider credential**, because `plan` is the one model-backed verb.
+4. A **model provider credential**, because `plan` and `do` are model-backed
+   verbs (this proof uses `plan`).
 
 The script refuses to run when any of these is missing, and writes nothing. A
 proof that quietly downgrades itself into a mock is worse than no proof, because
@@ -29,24 +30,18 @@ the file it leaves behind looks the same either way.
 ## Running it
 
 ```
-uv run --extra anthropic python evidence/live_round_trip.py
+uv run --with "amplifier-agent @ git+https://github.com/microsoft/amplifier-agent@v1#subdirectory=packages/python" --extra anthropic python evidence/live_round_trip.py
 ```
 
 Substitute the extra for whichever provider you use (`openai`, `gemini`,
-`azure-openai`). `plan` also needs the amplifier-agent engine:
-
-```
-uv tool install --force --with "amplifier-agent @ git+https://github.com/microsoft/amplifier-agent@v1#subdirectory=packages/python" git+https://github.com/bkrabach/amplifier-smart-tool-music-deck
-```
-
-That is the same string `music_deck.intelligence.ENGINE_INSTALL_HINT` prints when
-`plan` refuses, and the script names it from there rather than repeating it.
+`azure-openai`). `--with` supplies the engine to this checkout run without
+changing any tool installation.
 
 Then set your own Spotify app's client id and run:
 
 ```
 export MUSIC_DECK_CLIENT_ID=<your client id>     # SPOTIFY_CLIENT_ID also works
-uv run --extra anthropic python evidence/live_round_trip.py
+uv run --with "amplifier-agent @ git+https://github.com/microsoft/amplifier-agent@v1#subdirectory=packages/python" --extra anthropic python evidence/live_round_trip.py
 ```
 
 What happens: `check` reports the tool's state, `login` opens a browser once (it

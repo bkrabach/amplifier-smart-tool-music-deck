@@ -174,7 +174,7 @@ def test_a_credential_without_its_sdk_names_the_extra(scrubbed, monkeypatch):
 
     error = raised.value
     assert error.missing == intel.MISSING_PROVIDER_SDK
-    assert "music-deck[anthropic]" in error.remedy
+    assert intel.runtime_install_command("anthropic") in error.remedy
 
 
 def test_a_missing_engine_names_the_engine(scrubbed, monkeypatch):
@@ -187,6 +187,37 @@ def test_a_missing_engine_names_the_engine(scrubbed, monkeypatch):
 
     assert raised.value.missing == intel.MISSING_ENGINE
     assert intel.ENGINE_PACKAGE in raised.value.message
+
+
+def test_azure_without_a_model_refuses_before_a_prompt_or_engine_run(scrubbed, monkeypatch):
+    """An Azure deployment name is a model precondition, not a late engine error."""
+    monkeypatch.setenv(intel.PROVIDER_ENV_VAR, "azure-openai")
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "fixture-not-a-real-key")
+    monkeypatch.setattr(intel, "missing_package", lambda provider: None)
+    monkeypatch.setattr(intel, "engine_installed", lambda: True)
+    assembled: list[str] = []
+    monkeypatch.setattr(
+        plan_module, "assemble_prompt", lambda *args, **kwargs: assembled.append("called")
+    )
+    engine = intel.AmplifierIntelligence()
+    monkeypatch.setattr(engine, "run", lambda request: pytest.fail("engine run was reached"))
+
+    with pytest.raises(intel.NoModelSubstrate) as raised:
+        plan(BRIEF, intelligence=engine)
+
+    assert raised.value.missing == "model"
+    assert raised.value.exit_code == EXIT_NO_PROVIDER
+    assert "MUSIC_DECK_MODEL" in raised.value.remedy
+    assert assembled == []
+
+
+def test_an_explicit_azure_model_satisfies_preflight(scrubbed, monkeypatch):
+    monkeypatch.setenv(intel.PROVIDER_ENV_VAR, "azure-openai")
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "fixture-not-a-real-key")
+    monkeypatch.setattr(intel, "missing_package", lambda provider: None)
+    monkeypatch.setattr(intel, "engine_installed", lambda: True)
+
+    assert intel.AmplifierIntelligence().preflight("azure-openai", "my-deployment") == "azure-openai"
 
 
 def test_every_refusal_names_one_of_the_declared_preconditions(scrubbed):

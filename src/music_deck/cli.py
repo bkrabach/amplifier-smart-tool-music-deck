@@ -152,7 +152,7 @@ def _handle_manifest(_args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _handle_plan(args: argparse.Namespace) -> dict[str, Any]:
-    """`plan` -- the only model-backed verb (``cli.v1`` Core 3).
+    """`plan` -- a model-backed verb (``cli.v1`` Core 3).
 
     The CLI reads ``--context`` off disk and hands the library its *content*:
     a library that took a path would be deciding what a caller may read. The

@@ -59,6 +59,7 @@ because a credential check has to know what the credentials are.
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from typing import Final, Mapping, Sequence
@@ -289,6 +290,20 @@ def machine_credentials() -> tuple[Credential, ...]:
             value = token.get(key)
             if isinstance(value, str) and value.strip():
                 found.append(Credential(kind, value.strip()))
+    # Provider credentials are keys too.  The model runtime reads these directly
+    # from the environment, so a caller who pastes one into a brief would expose
+    # it unless this exact-value net includes them.  Importing the table is safe:
+    # it imports no provider SDK and performs no provider operation.
+    try:
+        from music_deck.intelligence import PROVIDER_CREDENTIAL_ENV
+
+        for provider, names in PROVIDER_CREDENTIAL_ENV.items():
+            for name in names:
+                value = os.environ.get(name, "").strip()
+                if value:
+                    found.append(Credential(f"the {provider} provider credential", value))
+    except Exception:  # noqa: BLE001 - the shape net remains available
+        pass
     return tuple(found)
 
 
