@@ -27,7 +27,8 @@ What it reports, in order:
 * the granted scopes
 * the last observed 403, which is the only signal an account is not on the
   app's Development Mode allowlist
-* whether a model provider is configured, which only ``plan`` needs
+* the raw model-provider environment signal and the complete local runtime
+  readiness for ``plan`` and ``do``
 """
 
 from __future__ import annotations
@@ -475,27 +476,115 @@ def _allowlist_fact() -> dict[str, Any]:
 
 
 def _provider_fact() -> dict[str, Any]:
-    """Whether a model provider is configured. Only ``plan`` needs one.
+    """The backwards-compatible raw signal that a provider setting is present.
 
-    ``cli.v1`` Core 2: every other verb runs with no provider configured and no
-    provider SDK installed, so "false" here is never a problem for `check`.
+    A provider-ish environment variable is not enough to run a model turn: the
+    selected provider also needs its SDK, the engine, and (for Azure) a deployment
+    model. ``model_runtime`` reports that complete readiness separately.
     """
     for name in _PROVIDER_ENV_VARS:
         if os.environ.get(name, "").strip():
             return {
                 "configured": True,
                 "source": f"environment {name}",
-                "needed_by": ["plan"],
+                "needed_by": ["plan", "do"],
             }
     return {
         "configured": False,
         "source": None,
-        "needed_by": ["plan"],
+        "needed_by": ["plan", "do"],
         "detail": (
-            "No model provider is configured. Every verb except `plan` runs without "
-            "one; `plan` will refuse (exit 3) naming what is missing."
+            "No model provider is configured. Every deterministic verb runs without "
+            "one; `plan` and `do` will refuse (exit 3) naming what is missing."
         ),
     }
+
+
+def _model_runtime_fact() -> dict[str, Any]:
+    """Complete local runtime readiness, without importing an SDK or engine.
+
+    ``AmplifierIntelligence.preflight`` and ``model_for`` are the single source
+    of truth for provider selection, package presence, engine presence, and model
+    selection. Both use environment reads and ``find_spec`` only on this path.
+    """
+    from music_deck.errors import MusicDeckError
+    from music_deck.intelligence import (
+        AmplifierIntelligence,
+        MISSING_ENGINE,
+        MISSING_PROVIDER_SDK,
+        NoModelSubstrate,
+        runtime_install_command,
+    )
+
+    selected_provider: str | None = None
+    try:
+        intelligence = AmplifierIntelligence()
+        selected_provider = intelligence.preflight()
+        selected_model = intelligence.model_for(selected_provider)
+        return {
+            "ready": True,
+            "missing": None,
+            "provider": selected_provider,
+            "model": selected_model,
+            "detail": "The selected provider, SDK, engine, and model are ready locally.",
+        }
+    except NoModelSubstrate as error:
+        selected_provider = selected_provider or error.provider
+        runtime: dict[str, Any] = {
+            "ready": False,
+            "missing": error.missing,
+            "provider": selected_provider,
+            "model": None,
+            "detail": error.message,
+            "remedy": error.remedy,
+        }
+        if error.missing in (MISSING_ENGINE, MISSING_PROVIDER_SDK) and selected_provider:
+            runtime["command"] = runtime_install_command(selected_provider)
+        return runtime
+    except MusicDeckError as error:
+        return {
+            "ready": False,
+            "missing": "model",
+            "provider": selected_provider,
+            "model": None,
+            "detail": error.message,
+            "remedy": error.remedy,
+        }
+    except Exception as error:  # noqa: BLE001 - check reports, it never crashes
+        return {
+            "ready": False,
+            "missing": "runtime",
+            "provider": selected_provider,
+            "model": None,
+            "detail": f"Could not inspect the local model runtime: {type(error).__name__}.",
+            "remedy": "Run `music-deck check` again after correcting the local Python environment.",
+        }
+
+
+def _token_can_authorize(
+    access_token: dict[str, Any], refresh_token: dict[str, Any]
+) -> bool:
+    """Whether ``auth.TokenProvider.bearer`` has a local path to a bearer.
+
+    A file existing is not authentication.  Mirror the auth layer's order:
+    a refresh token is usable unless it is known past the wall; otherwise an
+    access token must either have an unreadable expiry (which auth lets Spotify
+    judge) or remain outside auth's refresh skew.
+    """
+    if refresh_token.get("present") and refresh_token.get("past_wall") is not True:
+        return True
+    if not access_token.get("present"):
+        return False
+    if access_token.get("expired") is None:
+        return True
+    if access_token.get("expired") is True:
+        return False
+    try:
+        from music_deck.auth import ACCESS_TOKEN_SKEW_S
+
+        return int(access_token.get("seconds_remaining", 0)) > ACCESS_TOKEN_SKEW_S
+    except Exception:  # noqa: BLE001 - uncertain local auth is not readiness
+        return False
 
 
 # --------------------------------------------------------------------------- #
@@ -535,6 +624,7 @@ def _check() -> dict[str, Any]:
     scopes = _scopes_fact(token)
     allowlist = _allowlist_fact()
     provider = _provider_fact()
+    model_runtime = _model_runtime_fact()
 
     findings: list[str] = []
     if not client_id["present"]:
@@ -582,7 +672,7 @@ def _check() -> dict[str, Any]:
         and redirect_uri["conforms"]
         and token_file["present"]
         and token_problem is None
-        and refresh_token.get("past_wall") is not True
+        and _token_can_authorize(access_token, refresh_token)
     )
 
     return {
@@ -599,9 +689,11 @@ def _check() -> dict[str, Any]:
         "scopes": scopes,
         "allowlist": allowlist,
         "provider": provider,
+        "model_runtime": model_runtime,
         "ready": {
             "spotify_verbs": ready_for_spotify,
-            "plan": bool(provider["configured"]),
+            "plan": bool(model_runtime["ready"]),
+            "do": bool(model_runtime["ready"] and ready_for_spotify),
         },
         "findings": findings,
     }

@@ -17,7 +17,10 @@ import json
 import os
 import socket
 import stat
+import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -33,6 +36,8 @@ from music_deck.check import (
     state_dir,
 )
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
 REQUIRED_FACTS = (
     "client_id",
     "redirect_uri",
@@ -42,6 +47,19 @@ REQUIRED_FACTS = (
     "scopes",
     "allowlist",
     "provider",
+    "model_runtime",
+)
+
+_MODEL_ENV = (
+    "MUSIC_DECK_PROVIDER",
+    "MUSIC_DECK_MODEL",
+    "MUSIC_DECK_ENDPOINT",
+    "MUSIC_DECK_BASE_URL",
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GEMINI_API_KEY",
+    "AZURE_OPENAI_API_KEY",
 )
 
 
@@ -54,7 +72,7 @@ def isolated(tmp_path, monkeypatch):
     state.mkdir()
     monkeypatch.setenv("MUSIC_DECK_CONFIG_DIR", str(config))
     monkeypatch.setenv("MUSIC_DECK_STATE_DIR", str(state))
-    for name in ("MUSIC_DECK_CLIENT_ID", "MUSIC_DECK_REDIRECT_URI"):
+    for name in ("MUSIC_DECK_CLIENT_ID", "MUSIC_DECK_REDIRECT_URI", *_MODEL_ENV):
         monkeypatch.delenv(name, raising=False)
     return config, state
 
@@ -100,6 +118,44 @@ def test_check_makes_no_network_call(isolated, monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", refuse)
     result = check()
     assert result["tool"] == "music-deck"
+
+
+def test_check_runtime_inspection_imports_no_sdk_or_engine(tmp_path):
+    """The complete readiness report remains local and lazy on a bare install."""
+    probe = (
+        "import json, socket, sys;"
+        "socket.socket = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('network'));"
+        "from music_deck.check import check;"
+        "check();"
+        "print(json.dumps(sorted(m for m in sys.modules if m.split('.')[0] in "
+        "{'anthropic','openai','google','amplifier_agent'})))"
+    )
+    env = {
+        name: value
+        for name, value in os.environ.items()
+        if name
+        not in {
+            "MUSIC_DECK_PROVIDER",
+            "MUSIC_DECK_MODEL",
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "GOOGLE_API_KEY",
+            "GEMINI_API_KEY",
+            "AZURE_OPENAI_API_KEY",
+        }
+    }
+
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=20,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == []
 
 
 def test_check_never_raises_on_unreadable_files(isolated):
@@ -277,6 +333,62 @@ def test_a_refresh_token_past_the_wall_is_reported(isolated):
     assert result["ready"]["spotify_verbs"] is False
 
 
+@pytest.mark.parametrize(
+    "token",
+    [
+        {},
+        {"access_token": "   ", "refresh_token": "  "},
+        {
+            "access_token": "fixture-access-token",
+            "expires_at": _iso(datetime.now(timezone.utc) - timedelta(seconds=1)),
+        },
+    ],
+)
+def test_an_unusable_local_token_does_not_make_spotify_verbs_ready(isolated, token):
+    """Readiness means the auth layer can produce or refresh a bearer locally."""
+    config, state = isolated
+    (config / "config.json").write_text(json.dumps({"client_id": "fixture-id"}), encoding="utf-8")
+    _write_token(state, **token)
+
+    report = check()
+
+    assert report["token_file"]["present"] is True
+    assert report["ready"]["spotify_verbs"] is False
+
+
+def test_a_fresh_access_token_or_a_refresh_token_makes_spotify_verbs_ready(isolated):
+    config, state = isolated
+    (config / "config.json").write_text(json.dumps({"client_id": "fixture-id"}), encoding="utf-8")
+    _write_token(
+        state,
+        access_token="fixture-access-token",
+        expires_at=_iso(datetime.now(timezone.utc) + timedelta(hours=1)),
+    )
+    assert check()["ready"]["spotify_verbs"] is True
+
+    _write_token(
+        state,
+        access_token="fixture-access-token",
+        expires_at=_iso(datetime.now(timezone.utc) - timedelta(seconds=1)),
+        refresh_token="fixture-refresh-token",
+        authorized_at=_iso(datetime.now(timezone.utc)),
+    )
+    assert check()["ready"]["spotify_verbs"] is True
+
+
+def test_an_access_token_inside_auths_refresh_skew_is_not_ready_without_refresh(isolated):
+    """`check` uses the same safety margin as `TokenProvider.bearer`."""
+    config, state = isolated
+    (config / "config.json").write_text(json.dumps({"client_id": "fixture-id"}), encoding="utf-8")
+    _write_token(
+        state,
+        access_token="fixture-access-token",
+        expires_at=_iso(datetime.now(timezone.utc) + timedelta(seconds=1)),
+    )
+
+    assert check()["ready"]["spotify_verbs"] is False
+
+
 def test_an_unknown_authorisation_date_says_so_rather_than_guessing(isolated):
     _config, state = isolated
     _write_token(state, refresh_token="r")
@@ -322,15 +434,119 @@ def test_a_recorded_403_becomes_a_suspected_allowlist_problem(isolated):
     assert any("allowlist" in finding for finding in result["findings"])
 
 
-def test_provider_absence_is_reported_and_is_not_a_problem(isolated, monkeypatch):
-    """cli.v1 Core 2: only `plan` needs a provider."""
+def test_provider_absence_is_reported_and_runtime_is_not_ready(isolated, monkeypatch):
+    """Raw provider compatibility does not mistake a key-shaped setting for readiness."""
     for name in list(os.environ):
         if "API_KEY" in name or name == "MUSIC_DECK_PROVIDER":
             monkeypatch.delenv(name, raising=False)
     result = check()
     assert result["provider"]["configured"] is False
+    assert result["provider"]["needed_by"] == ["plan", "do"]
+    assert result["model_runtime"]["missing"] == "provider"
     assert result["ready"]["plan"] is False
+    assert result["ready"]["do"] is False
     assert not any("provider" in finding.lower() for finding in result["findings"])
+
+
+def test_explicit_provider_without_a_key_is_not_runtime_ready(isolated, monkeypatch):
+    monkeypatch.setenv("MUSIC_DECK_PROVIDER", "anthropic")
+
+    runtime = check()["model_runtime"]
+
+    assert runtime["ready"] is False
+    assert runtime["missing"] == "credentials"
+    assert "ANTHROPIC_API_KEY" in runtime["remedy"]
+
+
+def test_runtime_reports_missing_sdk_with_the_complete_install(isolated, monkeypatch):
+    from music_deck import intelligence
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "not-a-real-key")
+    monkeypatch.setattr(intelligence, "missing_package", lambda provider: "anthropic")
+
+    runtime = check()["model_runtime"]
+
+    assert runtime["ready"] is False
+    assert runtime["missing"] == "provider_sdk"
+    assert runtime["command"] == intelligence.runtime_install_command("anthropic")
+
+
+def test_runtime_reports_missing_engine_with_the_complete_install(isolated, monkeypatch):
+    from music_deck import intelligence
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "not-a-real-key")
+    monkeypatch.setattr(intelligence, "missing_package", lambda provider: None)
+    monkeypatch.setattr(intelligence, "engine_installed", lambda: False)
+
+    runtime = check()["model_runtime"]
+
+    assert runtime["ready"] is False
+    assert runtime["missing"] == "engine"
+    assert runtime["command"] == intelligence.runtime_install_command("anthropic")
+
+
+def test_runtime_reports_selected_provider_and_model_when_complete(isolated, monkeypatch):
+    from music_deck import intelligence
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "not-a-real-key")
+    monkeypatch.setattr(intelligence, "missing_package", lambda provider: None)
+    monkeypatch.setattr(intelligence, "engine_installed", lambda: True)
+
+    runtime = check()["model_runtime"]
+
+    assert runtime == {
+        "ready": True,
+        "missing": None,
+        "provider": "anthropic",
+        "model": intelligence.PROVIDER_DEFAULT_MODEL["anthropic"],
+        "detail": "The selected provider, SDK, engine, and model are ready locally.",
+    }
+    assert check()["ready"]["plan"] is True
+    assert check()["ready"]["do"] is False
+
+
+def test_azure_runtime_requires_its_explicit_deployment_model(isolated, monkeypatch):
+    from music_deck import intelligence
+
+    monkeypatch.setenv("MUSIC_DECK_PROVIDER", "azure-openai")
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "not-a-real-key")
+    monkeypatch.setattr(intelligence, "missing_package", lambda provider: None)
+    monkeypatch.setattr(intelligence, "engine_installed", lambda: True)
+
+    runtime = check()["model_runtime"]
+
+    assert runtime["ready"] is False
+    assert runtime["missing"] == "model"
+    assert runtime["provider"] == "azure-openai"
+    assert "MUSIC_DECK_MODEL" in runtime["remedy"]
+
+
+def test_runtime_docs_follow_the_canonical_uri_and_install_command():
+    """User-facing setup text is pinned to code values, not page-only wording."""
+    from music_deck import intelligence, setup_guide
+
+    runtime_command = intelligence.runtime_install_command("anthropic")
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    spotify_app = (REPO_ROOT / "docs" / "spotify-app.md").read_text(encoding="utf-8")
+    smart_tool = (REPO_ROOT / "src" / "music_deck" / "SMART_TOOL.md").read_text(
+        encoding="utf-8"
+    )
+    evidence_readme = (REPO_ROOT / "evidence" / "README.md").read_text(encoding="utf-8")
+    evidence_script = (REPO_ROOT / "evidence" / "live_round_trip.py").read_text(
+        encoding="utf-8"
+    )
+    checkout_command = (
+        f'uv run --with "{intelligence.ENGINE_REQUIREMENT}" --extra anthropic '
+        "python evidence/live_round_trip.py"
+    )
+
+    assert DEFAULT_REDIRECT_URI in readme
+    assert DEFAULT_REDIRECT_URI in spotify_app
+    assert runtime_command in readme
+    assert runtime_command in smart_tool
+    assert runtime_command in setup_guide.render()
+    assert checkout_command in evidence_readme
+    assert checkout_command in evidence_script
 
 
 def test_state_and_config_directories_are_outside_the_working_directory(monkeypatch):

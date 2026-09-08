@@ -63,7 +63,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from music_deck import setup_guide
-from music_deck.check import DEFAULT_REDIRECT_PORT, LOOPBACK_HOST_LITERAL
+from music_deck.check import DEFAULT_REDIRECT_PORT, LOOPBACK_HOST_LITERAL, REDIRECT_URI_ENV
 from music_deck.check import check as run_check
 from music_deck.check import config_path, resolve_redirect_uri, state_dir, token_path
 from music_deck.errors import ErrorCode, MusicDeckError
@@ -285,12 +285,9 @@ def paths() -> dict[str, Any]:
 def _have(facts: dict[str, Any]) -> list[str]:
     """What is configured -- the required facets only, one line each.
 
-    Core 8 asks `setup` to report "what is configured". It stays to the two
-    things a caller must have for the Spotify verbs to work, and never mentions
-    the optional model provider: a caller who has already configured one has no
-    gap there, and Core 8's "proportional to the gap" makes telling them about
-    it noise. The conformance kit says the same thing from the other end --
-    `setup` "stays silent about what is not".
+    Core 8 asks `setup` to report "what is configured". It stays to the Spotify
+    facts a caller needs for Spotify verbs. A complete model runtime is optional,
+    and its absence is reported only as the corresponding optional gap.
     """
     have: list[str] = []
 
@@ -374,23 +371,24 @@ def _missing(facts: dict[str, Any]) -> list[dict[str, Any]]:
             }
         )
 
-    provider = facts.get("provider") or {}
-    if not provider.get("configured"):
+    runtime = facts.get("model_runtime") or {}
+    if not runtime.get("ready"):
+        gap: dict[str, Any] = {
+            "what": "model_runtime",
+            "detail": runtime.get(
+                "detail",
+                "The local model runtime could not be confirmed ready.",
+            ),
+            "remedy": runtime.get(
+                "remedy",
+                "Run `music-deck check` after correcting the local Python environment.",
+            ),
+            "optional": True,
+        }
+        if runtime.get("command"):
+            gap["command"] = runtime["command"]
         gaps.append(
-            {
-                "what": "model_provider",
-                "detail": (
-                    "No model provider is configured. Every verb except `plan` "
-                    "runs without one, so this is optional."
-                ),
-                "remedy": (
-                    "Only if you want `plan`: set ANTHROPIC_API_KEY (or "
-                    "OPENAI_API_KEY, GOOGLE_API_KEY, AZURE_OPENAI_API_KEY) and "
-                    "install the matching SDK with:"
-                ),
-                "command": setup_guide.install_with("anthropic"),
-                "optional": True,
-            }
+            gap
         )
 
     return gaps
@@ -400,6 +398,11 @@ def _next_command(facts: dict[str, Any]) -> str:
     """The single next thing to run. Never a list -- one step at a time."""
     if not (facts.get("client_id") or {}).get("present"):
         return "music-deck setup --client-id <your client id>"
+    redirect = facts.get("redirect_uri") or {}
+    if redirect.get("conforms") is False:
+        if str(redirect.get("source") or "").startswith("environment"):
+            return f"unset {REDIRECT_URI_ENV}"
+        return f"music-deck setup --port {DEFAULT_REDIRECT_PORT}"
     if not (facts.get("token_file") or {}).get("present"):
         return "music-deck login"
     return "music-deck check"

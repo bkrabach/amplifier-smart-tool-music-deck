@@ -100,6 +100,14 @@ Install it:
 uv tool install git+https://github.com/bkrabach/amplifier-smart-tool-music-deck
 ```
 
+The deterministic verbs need no provider or model runtime. To use model-backed
+`plan` or `do` with Anthropic, add both runtime packages to the tool environment:
+
+```
+uv tool install --force --with anthropic --with "amplifier-agent @ git+https://github.com/microsoft/amplifier-agent@v1#subdirectory=packages/python" git+https://github.com/bkrabach/amplifier-smart-tool-music-deck
+export ANTHROPIC_API_KEY=<your key>
+```
+
 Then get from a fresh install to ready. `setup` writes prose a person reads: the
 gap you actually have, the steps that close it, and the one command to run next.
 `--json` returns the same content structured, and `--guide` prints the whole
@@ -131,6 +139,10 @@ Authorise against your own Spotify app, once:
 ```
 MUSIC_DECK_CLIENT_ID=<your client id> music-deck login
 ```
+
+Over SSH, run `music-deck login --no-browser` on the tool host. Before opening
+the authorisation URL it prints, run the exact `ssh -L` command `login` prints
+from the browser machine.
 
 Carry out a brief end to end -- searching, correcting, writing, reading back:
 

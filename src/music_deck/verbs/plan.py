@@ -131,10 +131,11 @@ def plan(
     # refusal happens here, before any prompt exists. Nothing above this line
     # has assembled a character of prompt, and nothing below it runs if this
     # raises.
-    engine.preflight(provider)
+    engine.preflight(provider, model)
 
     prompt = assemble_prompt(brief, context)
     transcript = [prompt]
+    _assert_boundary_kept(transcript)
 
     result = engine.run(ModelRequest(prompt=prompt, provider=provider, model=model))
 
@@ -416,7 +417,7 @@ def _assert_boundary_kept(transcript: Sequence[str]) -> None:
     report = check_plan_transcript(transcript)
     if not report.ok:
         raise MusicDeckError(
-            "boundary_violation",
+            "internal_error",
             "music-deck refused to hand back a plan whose prompt carried a "
             f"credential.\n{report.describe()}",
             "This is a defect in music-deck, not in your invocation. Report it "

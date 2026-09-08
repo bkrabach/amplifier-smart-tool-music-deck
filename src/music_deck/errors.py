@@ -79,7 +79,7 @@ EXIT_REFUSAL: Final = 2
 """A refusal (the frozen vocabulary), a usage error, or invalid input."""
 
 EXIT_NO_PROVIDER: Final = 3
-"""No usable model substrate. `plan` only -- cli.v1 Core 3."""
+"""No usable model substrate for a model-backed verb -- cli.v1 Core 3."""
 
 
 # --------------------------------------------------------------------------- #
@@ -257,7 +257,7 @@ class MusicDeckError(Exception):
 
 
 class NoProviderError(MusicDeckError):
-    """No usable model substrate for ``plan`` -- ``cli.v1`` Core 3, exit ``3``.
+    """No usable model substrate for a model-backed verb -- ``cli.v1`` Core 3, exit ``3``.
 
     Kept distinct from the frozen refusal codes because its exit code is the one
     thing Core 5 gives its own number to.

@@ -4,7 +4,7 @@ Everything else in this repository is proven against mocks. This script is the
 one thing that is not: it drives the real `music-deck` binary against a real
 Spotify account and a real model provider, and it writes down what happened.
 
-    uv run --extra anthropic python evidence/live_round_trip.py
+    uv run --with "amplifier-agent @ git+https://github.com/microsoft/amplifier-agent@v1#subdirectory=packages/python" --extra anthropic python evidence/live_round_trip.py
 
 **Only the owner can run it.** It needs their own registered Spotify app
 (Development Mode), their Premium account, a browser, and a model provider
@@ -552,7 +552,7 @@ def round_trip(
         if not trip.ok:
             return trip
 
-    # -- plan: the only model-backed verb; no Spotify request at all -----------
+    # -- plan: a model-backed verb; no Spotify request at all ------------------
     run = run_cli(
         base, ["plan", brief, "--output", str(plan_path)], timeout=PLAN_TIMEOUT_S
     )
