@@ -211,7 +211,7 @@ class Recording:
         #: record of what it was shown, independent of what the verb published.
         self.observed: list[str] = []
 
-    def preflight(self, provider: str | None = None) -> str:
+    def preflight(self, provider: str | None = None, model: str | None = None) -> str:
         self.preflight_calls.append(provider)
         return provider or "recording"
 
@@ -274,7 +274,7 @@ class Scripted(Recording):
 
     implementation = "scripted"
 
-    def preflight(self, provider: str | None = None) -> str:
+    def preflight(self, provider: str | None = None, model: str | None = None) -> str:
         self.preflight_calls.append(provider)
         return provider or "scripted"
 
@@ -288,7 +288,7 @@ class Unconfigured:
         self.preflight_calls: list[str | None] = []
         self.run_calls: list[Any] = []
 
-    def preflight(self, provider: str | None = None) -> str:
+    def preflight(self, provider: str | None = None, model: str | None = None) -> str:
         self.preflight_calls.append(provider)
         raise NoModelSubstrate(
             MISSING_PROVIDER,

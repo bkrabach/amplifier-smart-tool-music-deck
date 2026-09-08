@@ -51,8 +51,6 @@ from music_deck.verbs.setup import (
     write_client_id,
 )
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-
 GOOD_ID = "0123456789abcdef0123456789abcdef"
 
 # The same regex the upstream conformance kit scrubs the environment with, so a
@@ -100,7 +98,7 @@ def run_cli(*args: str, cwd: Path, timeout: float = 20.0, **env: str):
         capture_output=True,
         text=True,
         timeout=timeout,
-        env=_clean_env(PYTHONPATH=str(REPO_ROOT / "src"), **env),
+        env=_clean_env(**env),
     )
 
 
@@ -122,7 +120,7 @@ def test_setup_guide_carries_the_registration_steps_on_request(isolated):
     """Core 8: the whole orientation, "which is on request" -- `setup --guide`."""
     guide = setup(guide=True)["spotify_app"]
 
-    assert [entry["step"] for entry in guide["steps"]] == [1, 2, 3, 4, 5, 6, 7]
+    assert [entry["step"] for entry in guide["steps"]] == [1, 2, 3, 4, 5, 6, 7, 8]
     text = json.dumps(guide)
     # The four facts the work item names as load-bearing.
     assert "http://127.0.0.1" in text
@@ -135,13 +133,10 @@ def test_setup_guide_carries_the_registration_steps_on_request(isolated):
 def test_the_guide_ships_inside_the_package_not_in_the_repository():
     """Core 4: the steps must be "text the installed package carries".
 
-    Asserted structurally: the module that holds them is inside the importable
-    package, and the package directory is what ``pyproject.toml`` ships.
+    Asserted by importing the installed package: this test must not depend on
+    the checkout being injected into a subprocess's ``PYTHONPATH``.
     """
-    module = Path(setup_guide.__file__).resolve()
-    package = (REPO_ROOT / "src" / "music_deck").resolve()
-
-    assert module.parent == package
+    assert setup_guide.__package__ == "music_deck"
     assert setup_guide.render().strip()
 
 
@@ -186,6 +181,38 @@ def test_setup_client_id_writes_the_config_and_names_login_next(isolated):
     assert json.loads(written.read_text(encoding="utf-8"))["client_id"] == GOOD_ID
     assert result["action"] == "configured"
     assert result["next_command"] == "music-deck login"
+
+
+def test_setup_repairs_an_invalid_config_redirect_before_recommending_login(isolated):
+    from music_deck.check import config_path
+
+    config_path().parent.mkdir(parents=True, exist_ok=True)
+    config_path().write_text(
+        json.dumps({"client_id": GOOD_ID, "redirect_uri": "http://localhost:8888"}),
+        encoding="utf-8",
+    )
+
+    result = setup()
+
+    assert any(gap["what"] == "redirect_uri" for gap in result["missing"])
+    assert result["next_command"] == "music-deck setup --port 8888"
+
+
+def test_setup_repairs_the_effective_environment_redirect_before_login(isolated, monkeypatch):
+    from music_deck.check import config_path
+
+    config_path().parent.mkdir(parents=True, exist_ok=True)
+    config_path().write_text(
+        json.dumps({"client_id": GOOD_ID, "redirect_uri": "http://127.0.0.1:9000"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MUSIC_DECK_REDIRECT_URI", "http://localhost:8888")
+
+    result = setup()
+
+    assert result["redirect_uri"]["source"] == "environment MUSIC_DECK_REDIRECT_URI"
+    assert any(gap["what"] == "redirect_uri" for gap in result["missing"])
+    assert result["next_command"] == "unset MUSIC_DECK_REDIRECT_URI"
 
 
 def test_the_written_config_is_0600_and_its_directory_0700(isolated, monkeypatch):
@@ -574,7 +601,11 @@ def test_the_report_is_proportional_and_never_mentions_a_provider_it_has(
     not appear, in either shape. A report that printed everything and merely
     reordered it would pass every other test in this file and fail this one.
     """
+    from music_deck import intelligence
+
     monkeypatch.setenv("ANTHROPIC_API_KEY", "not-a-real-key")
+    monkeypatch.setattr(intelligence, "missing_package", lambda provider: None)
+    monkeypatch.setattr(intelligence, "engine_installed", lambda: True)
 
     document = setup()
     prose = render(document)

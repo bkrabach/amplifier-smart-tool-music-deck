@@ -1,0 +1,203 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SMART_TOOLS_SHA: fd3c63416d1c9b0eb6e55981b248d1b2b5c64452
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          python-version: "3.12"
+
+      - name: Build wheel and source distribution
+        run: uv build --out-dir "$RUNNER_TEMP/dist"
+
+      - name: Inspect built archives
+        run: |
+          python - "$RUNNER_TEMP/dist" <<'PY'
+          from __future__ import annotations
+
+          from pathlib import Path
+          import tarfile
+          import zipfile
+
+          dist = Path(__import__("sys").argv[1])
+          wheels = list(dist.glob("*.whl"))
+          sdists = list(dist.glob("*.tar.gz"))
+          assert len(wheels) == 1, wheels
+          assert len(sdists) == 1, sdists
+
+          with zipfile.ZipFile(wheels[0]) as archive:
+              names = archive.namelist()
+              assert "music_deck/SMART_TOOL.md" in names
+              assert "music_deck/setup_guide.py" in names
+              metadata_name = next(
+                  name for name in names if name.endswith(".dist-info/METADATA")
+              )
+              metadata = archive.read(metadata_name).decode("utf-8")
+              assert "Description-Content-Type: text/markdown" in metadata
+              assert "# music-deck" in metadata
+
+          with tarfile.open(sdists[0]) as archive:
+              names = archive.getnames()
+              assert any(name.endswith("/README.md") for name in names)
+              assert any(name.endswith("/music_deck/SMART_TOOL.md") for name in names)
+              assert any(name.endswith("/music_deck/setup_guide.py") for name in names)
+          PY
+
+      - name: Install wheel into an isolated environment
+        run: |
+          uv venv --python 3.12 "$RUNNER_TEMP/wheel-venv"
+          uv pip install --python "$RUNNER_TEMP/wheel-venv/bin/python" \
+            "$RUNNER_TEMP/dist/"*.whl pytest
+
+      - name: Verify the installed wheel is imported
+        run: |
+          mkdir -p "$RUNNER_TEMP/scratch" "$RUNNER_TEMP/home" \
+            "$RUNNER_TEMP/xdg-config" "$RUNNER_TEMP/xdg-state"
+          cd "$RUNNER_TEMP/scratch"
+          env -u PYTHONPATH \
+            -u MUSIC_DECK_CLIENT_ID \
+            HOME="$RUNNER_TEMP/home" \
+            XDG_CONFIG_HOME="$RUNNER_TEMP/xdg-config" \
+            XDG_STATE_HOME="$RUNNER_TEMP/xdg-state" \
+            PATH="$RUNNER_TEMP/wheel-venv/bin:$PATH" \
+            "$RUNNER_TEMP/wheel-venv/bin/python" - "$GITHUB_WORKSPACE" <<'PY'
+          from pathlib import Path
+          import music_deck
+          import sys
+
+          checkout = Path(sys.argv[1]).resolve()
+          imported = Path(music_deck.__file__).resolve()
+          assert not imported.is_relative_to(checkout), imported
+          PY
+
+      - name: Run non-live tests against the installed wheel
+        run: |
+          cd "$RUNNER_TEMP/scratch"
+          env -u PYTHONPATH \
+            -u MUSIC_DECK_CLIENT_ID \
+            HOME="$RUNNER_TEMP/home" \
+            XDG_CONFIG_HOME="$RUNNER_TEMP/xdg-config" \
+            XDG_STATE_HOME="$RUNNER_TEMP/xdg-state" \
+            PATH="$RUNNER_TEMP/wheel-venv/bin:$PATH" \
+            "$RUNNER_TEMP/wheel-venv/bin/python" -m pytest \
+            "$GITHUB_WORKSPACE/tests" -m "not live" -q -ra
+
+      - name: Smoke installed wheel commands
+        run: |
+          cd "$RUNNER_TEMP/scratch"
+          env -u PYTHONPATH \
+            -u MUSIC_DECK_CLIENT_ID \
+            HOME="$RUNNER_TEMP/home" \
+            XDG_CONFIG_HOME="$RUNNER_TEMP/xdg-config" \
+            XDG_STATE_HOME="$RUNNER_TEMP/xdg-state" \
+            PATH="$RUNNER_TEMP/wheel-venv/bin:$PATH" \
+            music-deck check > "$RUNNER_TEMP/check.json"
+          env -u PYTHONPATH \
+            -u MUSIC_DECK_CLIENT_ID \
+            HOME="$RUNNER_TEMP/home" \
+            XDG_CONFIG_HOME="$RUNNER_TEMP/xdg-config" \
+            XDG_STATE_HOME="$RUNNER_TEMP/xdg-state" \
+            PATH="$RUNNER_TEMP/wheel-venv/bin:$PATH" \
+            music-deck manifest > "$RUNNER_TEMP/manifest.json"
+          env -u PYTHONPATH \
+            -u MUSIC_DECK_CLIENT_ID \
+            HOME="$RUNNER_TEMP/home" \
+            XDG_CONFIG_HOME="$RUNNER_TEMP/xdg-config" \
+            XDG_STATE_HOME="$RUNNER_TEMP/xdg-state" \
+            PATH="$RUNNER_TEMP/wheel-venv/bin:$PATH" \
+            music-deck setup --guide > "$RUNNER_TEMP/setup-guide.txt"
+          "$RUNNER_TEMP/wheel-venv/bin/python" - "$RUNNER_TEMP" <<'PY'
+          from pathlib import Path
+          import json
+          import sys
+
+          root = Path(sys.argv[1])
+          assert json.loads((root / "check.json").read_text())["client_id"]["present"] is False
+          assert json.loads((root / "manifest.json").read_text())["name"] == "music-deck"
+          guide = (root / "setup-guide.txt").read_text()
+          assert "http://127.0.0.1:8888" in guide
+          assert "music-deck login --no-browser" in guide
+          PY
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: microsoft/amplifier-smart-tools
+          ref: fd3c63416d1c9b0eb6e55981b248d1b2b5c64452
+          path: .ci-smart-tools
+          persist-credentials: false
+
+      - name: Verify Smart Tools kit pin is documented
+        run: |
+          python - "$GITHUB_WORKSPACE" "$SMART_TOOLS_SHA" <<'PY'
+          from pathlib import Path
+          import sys
+
+          workspace = Path(sys.argv[1])
+          sha = sys.argv[2]
+          workflow = (workspace / ".github/workflows/ci.yml").read_text()
+          pins = (workspace / "PINS.md").read_text()
+          assert f"ref: {sha}" in workflow
+          assert sha in pins
+          PY
+
+      - name: Run Smart Tools conformance with no skips
+        run: |
+          cd "$RUNNER_TEMP/scratch"
+          env -u PYTHONPATH \
+            -u MUSIC_DECK_CLIENT_ID \
+            HOME="$RUNNER_TEMP/home" \
+            XDG_CONFIG_HOME="$RUNNER_TEMP/xdg-config" \
+            XDG_STATE_HOME="$RUNNER_TEMP/xdg-state" \
+            PATH="$RUNNER_TEMP/wheel-venv/bin:$PATH" \
+            uv run "$GITHUB_WORKSPACE/.ci-smart-tools/conformance/run.py" \
+            "$GITHUB_WORKSPACE" --json-only > "$RUNNER_TEMP/conformance.json"
+          "$RUNNER_TEMP/wheel-venv/bin/python" - "$RUNNER_TEMP/conformance.json" <<'PY'
+          import json
+          import sys
+
+          result = json.load(open(sys.argv[1], encoding="utf-8"))
+          assert result["verdict"] == "PASS", result
+          assert result["counts"] == {"pass": 15, "fail": 0, "skip": 0}, result
+          PY
+
+      - name: Install source distribution into a second isolated environment
+        run: |
+          uv venv --python 3.12 "$RUNNER_TEMP/sdist-venv"
+          uv pip install --python "$RUNNER_TEMP/sdist-venv/bin/python" \
+            "$RUNNER_TEMP/dist/"*.tar.gz
+          cd "$RUNNER_TEMP/scratch"
+          env -u PYTHONPATH \
+            -u MUSIC_DECK_CLIENT_ID \
+            HOME="$RUNNER_TEMP/home" \
+            XDG_CONFIG_HOME="$RUNNER_TEMP/xdg-config" \
+            XDG_STATE_HOME="$RUNNER_TEMP/xdg-state" \
+            PATH="$RUNNER_TEMP/sdist-venv/bin:$PATH" \
+            music-deck check > "$RUNNER_TEMP/sdist-check.json"
+          "$RUNNER_TEMP/sdist-venv/bin/python" - "$RUNNER_TEMP/sdist-check.json" <<'PY'
+          import json
+          import sys
+
+          assert json.load(open(sys.argv[1], encoding="utf-8"))["client_id"]["present"] is False
+          PY

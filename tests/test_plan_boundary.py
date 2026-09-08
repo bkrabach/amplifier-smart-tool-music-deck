@@ -38,6 +38,7 @@ import sys
 import pytest
 
 from music_deck import BoundaryReport, check_plan_transcript, check_prompts
+from music_deck.errors import MusicDeckError
 from music_deck.intelligence import ModelRequest
 from music_deck.prompt_boundary import (
     ACCESS_TOKEN,
@@ -58,6 +59,7 @@ from music_deck.testing import (
     Recording,
     credential_leak_prompt,
 )
+from music_deck.verbs.do import do
 from music_deck.verbs.plan import assemble_prompt, plan
 
 BRIEF = "upbeat 90s guitar songs for a Saturday morning"
@@ -68,6 +70,26 @@ FAKE_CREDENTIALS = {
     REFRESH_TOKEN: FAKE_REFRESH_TOKEN,
     CLIENT_ID: FAKE_CLIENT_ID,
 }
+
+_MODEL_ENV = (
+    "MUSIC_DECK_PROVIDER",
+    "MUSIC_DECK_MODEL",
+    "MUSIC_DECK_ENDPOINT",
+    "MUSIC_DECK_BASE_URL",
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GEMINI_API_KEY",
+    "AZURE_OPENAI_API_KEY",
+)
+
+
+@pytest.fixture
+def no_model_environment(monkeypatch):
+    """A credential-free host, even when pytest inherits a developer shell."""
+    for name in _MODEL_ENV:
+        monkeypatch.delenv(name, raising=False)
+
 
 
 def record_good() -> Recording:
@@ -241,7 +263,7 @@ def test_credentials_in_reports_one_finding_per_leaked_credential():
 # machine_credentials -- what the tool checks itself against
 # --------------------------------------------------------------------------- #
 def test_machine_credentials_reads_the_config_file_and_the_token_file(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, no_model_environment
 ):
     """The client ID comes from where `check` reads it -- env OR the config file.
 
@@ -274,7 +296,9 @@ def test_machine_credentials_reads_the_config_file_and_the_token_file(
     }
 
 
-def test_machine_credentials_on_a_machine_with_nothing_signed_in(monkeypatch, tmp_path):
+def test_machine_credentials_on_a_machine_with_nothing_signed_in(
+    monkeypatch, tmp_path, no_model_environment
+):
     """Nothing configured is not an error: there is nothing to leak."""
     monkeypatch.setenv("MUSIC_DECK_CONFIG_DIR", str(tmp_path / "config"))
     monkeypatch.setenv("MUSIC_DECK_STATE_DIR", str(tmp_path / "state"))
@@ -307,9 +331,28 @@ def test_plan_refuses_to_hand_back_a_plan_whose_prompt_carried_a_credential(
     with pytest.raises(MusicDeckError) as raised:
         plan(BRIEF, intelligence=Recording())
 
-    assert raised.value.code == "boundary_violation"
+    assert raised.value.code == "internal_error"
     assert ACCESS_TOKEN in str(raised.value)
     assert FAKE_ACCESS_TOKEN not in str(raised.value)
+
+
+@pytest.mark.parametrize("verb", [plan, do])
+def test_a_credential_in_the_outbound_brief_never_reaches_the_engine(
+    monkeypatch, tmp_path, verb
+):
+    """Boundary enforcement happens before dispatch, not after a model saw it."""
+    provider_key = "fixture-provider-key-not-real-0123456789"
+    monkeypatch.setenv("MUSIC_DECK_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("MUSIC_DECK_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("MUSIC_DECK_CLIENT_ID", FAKE_CLIENT_ID)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", provider_key)
+    recorder = Recording()
+
+    with pytest.raises(MusicDeckError) as raised:
+        verb(f"brief with {FAKE_CLIENT_ID} and {provider_key}", intelligence=recorder)
+
+    assert raised.value.code == "internal_error"
+    assert recorder.requests == []
 
 
 # --------------------------------------------------------------------------- #

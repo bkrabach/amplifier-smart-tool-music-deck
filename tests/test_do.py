@@ -636,10 +636,10 @@ def test_a_credential_in_a_prompt_fails_closed_before_anything_is_returned(
     # The check names what it found and never reprints it.
     assert FAKE_ACCESS_TOKEN not in failure.message
     assert FAKE_ACCESS_TOKEN not in failure.remedy
-    # It refused on the way out, so the model did see the prompt -- but the
-    # caller sees a refusal, never the result document.
-    assert model.prompts
-    assert sent(transport)
+    # It refused before dispatch: a model must not see a credential even when
+    # the caller supplied it verbatim in the brief.
+    assert model.prompts == []
+    assert sent(transport) == []
 
 
 # =========================================================================== #
@@ -863,6 +863,22 @@ def test_a_model_that_only_talks_writes_nothing_and_says_so(monkeypatch, signed_
     assert failure.extra["result"]["actions"] == []
     assert failure.extra["result"]["tool_results"] == []
     assert failure.extra["stopped_by"] is None
+
+
+def test_a_credential_in_a_tool_result_never_reaches_the_engine(monkeypatch):
+    """The outbound tool result is checked before the model double observes it."""
+    provider_key = "fixture-provider-key-not-real-0123456789"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", provider_key)
+    monkeypatch.setattr(
+        do_module._Run, "_run_tool", lambda self, tool, arguments: {"secret": provider_key}
+    )
+    model = Scripted(call("search", query=LIVE_QUERY))
+
+    with pytest.raises(MusicDeckError) as raised:
+        do(BRIEF, intelligence=model)
+
+    assert raised.value.code == "internal_error"
+    assert model.observed == []
 
 
 def test_a_tool_music_deck_never_declared_cannot_be_called(monkeypatch, signed_in):

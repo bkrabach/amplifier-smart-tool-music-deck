@@ -45,15 +45,23 @@ music-deck's own environment has to be a form of this one -- a tool install owns
 its virtualenv, and ``uv pip install`` cannot reach inside it."""
 
 
-def install_with(extra_package: str) -> str:
-    """The documented install command, plus one extra package in the tool env.
+def _shell_requirement(requirement: str) -> str:
+    """Quote one fixed requirement when its spelling needs shell protection."""
+    return f'"{requirement}"' if any(character.isspace() for character in requirement) else requirement
 
-    ``uv tool install --force --with <pkg> git+<repo>`` is the only form that
-    adds a package to an already tool-installed copy: ``uv pip install`` has no
-    way to name the tool's virtualenv. Every "install the provider SDK" remedy
-    is built from here so the refusal and the fix cannot drift apart.
+
+def install_with(*extra_packages: str) -> str:
+    """The documented install command, plus packages in the tool environment.
+
+    ``uv tool install --force --with <pkg> ... git+<repo>`` is the only form
+    that adds packages to an already tool-installed copy: ``uv pip install``
+    has no way to name the tool's virtualenv. Requirements with spaces are
+    double-quoted so a pinned git requirement remains one shell argument.
     """
-    return f"uv tool install --force --with {extra_package} git+{REPO_URL}"
+    if not extra_packages:
+        return f"uv tool install --force git+{REPO_URL}"
+    extras = " ".join(f"--with {_shell_requirement(package)}" for package in extra_packages)
+    return f"uv tool install --force {extras} git+{REPO_URL}"
 
 
 CLIENT_ID_LENGTH: Final = 32
@@ -280,11 +288,35 @@ def steps(redirect_uri: str | None = None) -> list[dict[str, Any]]:
                 "Run: music-deck login",
                 "Your browser opens, you approve the scopes, and the token is "
                 "stored readable only by you.",
+                "Over SSH, run `music-deck login --no-browser` on the tool "
+                "host. Before opening the printed authorisation URL, run the "
+                "`ssh -L` command login prints from the browser machine.",
             ],
             "why": (
                 "`login` is the only interactive verb music-deck has "
                 "(boundary.v1 Core 5). Everything after this runs "
                 "non-interactively."
+            ),
+        },
+        {
+            "step": 8,
+            "title": "Optionally enable model-backed plan and do",
+            "do": [
+                "The deterministic verbs need neither a provider key nor a "
+                "model runtime. To use `plan` or `do` with Anthropic, install "
+                "both into music-deck's tool environment:",
+                "Run: "
+                + install_with(
+                    "anthropic",
+                    "amplifier-agent @ git+https://github.com/microsoft/"
+                    "amplifier-agent@v1#subdirectory=packages/python",
+                ),
+                "Set the key in the shell where you run music-deck: export "
+                "ANTHROPIC_API_KEY=<your key>",
+            ],
+            "why": (
+                "A provider SDK alone cannot run a turn; the amplifier-agent "
+                "engine is required too. This one command installs both."
             ),
         },
     ]
@@ -361,6 +393,8 @@ def _fill(line: str) -> list[str]:
     """
     if not line.strip():
         return [""]
+    if "uv tool install " in line:
+        return [line]
     indent = line[: len(line) - len(line.lstrip())]
     return textwrap.wrap(
         line.strip(),
