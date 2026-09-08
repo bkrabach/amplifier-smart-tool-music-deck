@@ -25,7 +25,13 @@ import sys
 import pytest
 
 from music_deck import intelligence as intel
-from music_deck.errors import EXIT_NO_PROVIDER, EXIT_REFUSAL, EXIT_SUCCESS, NoProviderError
+from music_deck.errors import (
+    EXIT_NO_PROVIDER,
+    EXIT_REFUSAL,
+    EXIT_SUCCESS,
+    MusicDeckError,
+    NoProviderError,
+)
 from music_deck.testing import Unconfigured
 from music_deck.verbs import plan as plan_module
 from music_deck.verbs.plan import plan
@@ -123,6 +129,29 @@ def test_it_refuses_rather_than_falling_back_to_a_deterministic_answer():
     with pytest.raises(NoProviderError):
         result = plan(BRIEF, intelligence=Unconfigured())
         pytest.fail(f"plan returned {result!r} instead of refusing")
+
+
+def test_malformed_model_output_never_appears_in_the_public_error():
+    """A model reply is untrusted even though invalid_plan is a known code."""
+    marker = "fixture-model-secret-must-not-escape"
+
+    class Malformed:
+        implementation = "test"
+
+        def preflight(self, provider=None, model=None):
+            return "test"
+
+        def run(self, request):
+            return type("Result", (), {"text": marker})()
+
+    with pytest.raises(MusicDeckError) as raised:
+        plan(BRIEF, intelligence=Malformed())
+
+    error = raised.value
+    assert error.code == "invalid_plan"
+    assert marker not in error.message
+    assert marker not in error.remedy
+    assert marker not in json.dumps(error.envelope())
 
 
 # --------------------------------------------------------------------------- #

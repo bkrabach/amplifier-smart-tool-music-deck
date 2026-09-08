@@ -42,7 +42,12 @@ from typing import Any
 import pytest
 
 from music_deck import intelligence as intel
-from music_deck.errors import EXIT_FAILURE, MusicDeckError
+from music_deck.errors import (
+    EXIT_FAILURE,
+    EXIT_NO_PROVIDER,
+    ErrorCode,
+    MusicDeckError,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_ROOT = REPO_ROOT / "src" / "music_deck"
@@ -517,7 +522,7 @@ def test_the_prompt_crosses_the_seam_verbatim(monkeypatch):
 # --------------------------------------------------------------------------- #
 # cli.v1 Core 4 -- a failure is loud, coded, and carries the library's remedy
 # --------------------------------------------------------------------------- #
-def test_a_failed_turn_is_a_refusal_carrying_the_librarys_code_and_remedy(monkeypatch):
+def test_a_failed_turn_is_a_safe_refusal_with_a_contracted_code_and_remedy(monkeypatch):
     """A turn that failed is never composed into a plan.
 
     Observed live: a rejected model selection came back ``state="failure"``
@@ -541,11 +546,11 @@ def test_a_failed_turn_is_a_refusal_carrying_the_librarys_code_and_remedy(monkey
         intel.AmplifierIntelligence().run(intel.ModelRequest(prompt=PROMPT))
 
     error = raised.value
-    assert error.code == "selector_rejected"
-    assert "cannot be honored" in error.message
-    assert "Name a model the account can reach." in error.remedy
-    assert intel.MODEL_ENV_VAR in error.remedy
-    assert error.exit_code == EXIT_FAILURE
+    assert error.code == ErrorCode.NO_PROVIDER_CONFIGURED
+    assert error.exit_code == EXIT_NO_PROVIDER
+    assert "configured model provider" in error.message
+    assert "cannot be honored" not in error.message
+    assert "Name a model the account can reach." not in error.remedy
     assert error.envelope()["error"]["remedy"].strip()
 
 
@@ -555,8 +560,9 @@ def test_a_turn_that_fails_without_saying_why_still_refuses(monkeypatch):
     with pytest.raises(MusicDeckError) as raised:
         intel.AmplifierIntelligence().run(intel.ModelRequest(prompt=PROMPT))
 
-    assert raised.value.code == "model_did_not_run"
-    assert "cancelled" in raised.value.message
+    assert raised.value.code == ErrorCode.INTERNAL_ERROR
+    assert raised.value.diagnostic_code == "model_did_not_run"
+    assert "usable response" in raised.value.message
 
 
 def test_an_agent_that_cannot_be_built_refuses_with_its_own_remedy(monkeypatch):
@@ -580,8 +586,8 @@ def test_an_agent_that_cannot_be_built_refuses_with_its_own_remedy(monkeypatch):
 
     error = raised.value
     assert error.code == "invalid_input"
-    assert "unregistered host setting" in error.message
-    assert "AMPLIFIER_AGENT_" in error.remedy
+    assert "model engine stopped" in error.message
+    assert "unregistered host setting" not in error.message
 
 
 def test_a_turn_that_raises_is_the_same_refusal(monkeypatch):
@@ -593,7 +599,8 @@ def test_a_turn_that_raises_is_the_same_refusal(monkeypatch):
     with pytest.raises(MusicDeckError) as raised:
         intel.AmplifierIntelligence().run(intel.ModelRequest(prompt=PROMPT))
 
-    assert raised.value.code == "closed"
+    assert raised.value.code == ErrorCode.INTERNAL_ERROR
+    assert raised.value.diagnostic_code is None
 
 
 def test_a_successful_turn_with_no_words_is_not_an_answer(monkeypatch):
@@ -604,7 +611,38 @@ def test_a_successful_turn_with_no_words_is_not_an_answer(monkeypatch):
     with pytest.raises(MusicDeckError) as raised:
         intel.AmplifierIntelligence().run(intel.ModelRequest(prompt=PROMPT))
 
-    assert raised.value.code == "model_did_not_run"
+    assert raised.value.code == ErrorCode.INTERNAL_ERROR
+    assert raised.value.diagnostic_code == "model_did_not_run"
+
+
+def test_an_engine_failure_cannot_leak_its_code_or_payload_through_the_cli(
+    monkeypatch, capsys
+):
+    """The real engine seam and CLI share one safe error projection."""
+    marker = "fixture-engine-secret-must-not-escape"
+    install_fake_engine(
+        monkeypatch,
+        result=FakeTurnResult(
+            state="failure",
+            error=FakeAgentError(
+                f"unknown_{marker}",
+                f"engine message {marker}",
+                f"engine remedy {marker}",
+            ),
+        ),
+    )
+
+    from music_deck import cli
+
+    exit_code = cli.main(["plan", "make a playlist"])
+    printed = capsys.readouterr()
+    envelope = json.loads(printed.out)["error"]
+
+    assert exit_code == EXIT_FAILURE
+    assert envelope["code"] == ErrorCode.INTERNAL_ERROR
+    assert marker not in printed.out
+    assert marker not in printed.err
+    assert marker not in json.dumps(envelope)
 
 
 # --------------------------------------------------------------------------- #

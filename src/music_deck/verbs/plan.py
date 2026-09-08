@@ -149,8 +149,7 @@ def plan(
     if draft is None:
         raise MusicDeckError(
             ErrorCode.INVALID_PLAN,
-            "The model returned no JSON object, so there is no plan to hand back. "
-            f"It replied: {_snippet(result.text)}",
+            "The model returned no JSON object, so there is no plan to hand back.",
             "Run `music-deck plan` again, or rephrase the brief. music-deck never "
             "invents a plan the model did not produce.",
             path="$",
@@ -419,7 +418,8 @@ def _assert_boundary_kept(transcript: Sequence[str]) -> None:
         raise MusicDeckError(
             "internal_error",
             "music-deck refused to hand back a plan whose prompt carried a "
-            f"credential.\n{report.describe()}",
+            "credential: the access token, refresh token, and client ID must "
+            "never reach a model.",
             "This is a defect in music-deck, not in your invocation. Report it "
             "with the message above; no access token, refresh token or client "
             "ID should ever be able to reach a prompt.",

@@ -14,6 +14,7 @@ here first.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import re
@@ -24,6 +25,7 @@ from pathlib import Path
 
 import pytest
 
+from music_deck import cli
 from music_deck.errors import (
     EXIT_FAILURE,
     EXIT_NO_PROVIDER,
@@ -31,6 +33,7 @@ from music_deck.errors import (
     EXIT_SUCCESS,
     FROZEN_CODES,
     ErrorCode,
+    MusicDeckError,
     exit_code_for,
 )
 
@@ -322,6 +325,58 @@ def test_a_bad_invocation_fails_loudly_with_the_envelope(scratch):
     assert envelope["message"] and envelope["remedy"]
 
 
+def test_an_adapter_local_model_code_is_normalised_without_its_sensitive_detail(
+    monkeypatch, capsys
+):
+    """The CLI never emits an engine-only code or its unreviewed payload."""
+    fixture_credential = "fixture-credential-must-not-be-emitted"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", fixture_credential)
+    probe = dataclasses.replace(
+        cli.VERBS_BY_NAME["check"],
+        handler=lambda _args: (_ for _ in ()).throw(
+            MusicDeckError(
+                "model_error",
+                f"The model returned {fixture_credential}.",
+                f"Retry with {fixture_credential}.",
+                provider="anthropic",
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        cli, "VERBS", tuple(probe if verb.name == "check" else verb for verb in cli.VERBS)
+    )
+
+    code = cli.main(["check"])
+    captured = capsys.readouterr()
+    envelope = json.loads(captured.out)["error"]
+
+    assert code == EXIT_FAILURE
+    assert envelope["code"] == ErrorCode.INTERNAL_ERROR
+    assert "diagnostic_code" not in envelope
+    assert "model_error" not in envelope["message"]
+    assert envelope["message"].startswith("music-deck encountered an internal error")
+    assert fixture_credential not in captured.out
+    assert fixture_credential not in captured.err
+
+
+def test_unknown_error_input_is_absent_from_every_public_surface():
+    marker = "fixture-secret-must-not-escape"
+    error = MusicDeckError(
+        f"unknown_{marker}",
+        f"message {marker}",
+        f"remedy {marker}",
+        nested={"secret": marker},
+    )
+
+    envelope = error.envelope()
+
+    assert error.code == ErrorCode.INTERNAL_ERROR
+    assert marker not in json.dumps(envelope)
+    assert marker not in str(error)
+    assert marker not in error.message
+    assert marker not in error.remedy
+
+
 def test_a_missing_required_argument_is_a_usage_refusal(scratch):
     result = run("search", cwd=scratch)
     assert result.returncode == EXIT_REFUSAL
@@ -430,42 +485,48 @@ def test_apply_refuses_a_bad_plan_with_invalid_plan_naming_the_path(scratch):
 # Core 6 -- the frozen refusal vocabulary
 # --------------------------------------------------------------------------- #
 def test_the_frozen_vocabulary_is_exactly_the_codes_the_contract_names():
-    """Core 6 as ratified on 2026-09-06: ten codes, plus `port_unavailable`
-    (`4f4fbf6`) and `cancelled` (`fab12dc`)."""
-    assert FROZEN_CODES == {
-        "not_authenticated",
-        "reauthorization_required",
-        "not_allowlisted",
-        "premium_required",
-        "no_active_device",
-        "cancelled",
-        "rate_limited",
-        "quota_exceeded",
-        "partial_result",
-        "port_unavailable",
-        "playlist_items_unavailable",
-        "invalid_plan",
-    }
+    """The central registry exactly matches the code definitions in refusals.v1."""
+    contract = (REPO_ROOT / "contracts" / "refusals.v1.md").read_text(encoding="utf-8")
+    contract_codes = set(re.findall(r"`([a-z_]+)`\s+—", contract))
+
+    assert FROZEN_CODES == contract_codes
+    assert {
+        value
+        for name, value in vars(ErrorCode).items()
+        if name.isupper() and isinstance(value, str)
+    } == contract_codes
 
 
 def test_every_frozen_code_maps_to_the_refusal_exit_code():
-    """Core 6 calls these refusals; Core 5 gives a refusal exit 2."""
-    for code in FROZEN_CODES:
-        assert exit_code_for(code) == EXIT_REFUSAL
-
-
-def test_the_scaffolding_codes_are_not_part_of_the_frozen_vocabulary():
-    assert ErrorCode.NOT_IMPLEMENTED not in FROZEN_CODES
-    assert ErrorCode.USAGE not in FROZEN_CODES
-    assert exit_code_for(ErrorCode.NOT_IMPLEMENTED) == EXIT_FAILURE
-    assert exit_code_for(ErrorCode.USAGE) == EXIT_REFUSAL
+    """Core 5's four exits remain explicit across the complete vocabulary."""
+    assert {code: exit_code_for(code) for code in FROZEN_CODES} == {
+        ErrorCode.NOT_AUTHENTICATED: EXIT_REFUSAL,
+        ErrorCode.REAUTHORIZATION_REQUIRED: EXIT_REFUSAL,
+        ErrorCode.NOT_ALLOWLISTED: EXIT_REFUSAL,
+        ErrorCode.PREMIUM_REQUIRED: EXIT_REFUSAL,
+        ErrorCode.NO_ACTIVE_DEVICE: EXIT_REFUSAL,
+        ErrorCode.RATE_LIMITED: EXIT_REFUSAL,
+        ErrorCode.QUOTA_EXCEEDED: EXIT_REFUSAL,
+        ErrorCode.PARTIAL_RESULT: EXIT_REFUSAL,
+        ErrorCode.USAGE: EXIT_REFUSAL,
+        ErrorCode.INVALID_INPUT: EXIT_REFUSAL,
+        ErrorCode.INVALID_PLAN: EXIT_REFUSAL,
+        ErrorCode.NO_PROVIDER_CONFIGURED: EXIT_NO_PROVIDER,
+        ErrorCode.PORT_UNAVAILABLE: EXIT_REFUSAL,
+        ErrorCode.NO_BROWSER: EXIT_REFUSAL,
+        ErrorCode.CANCELLED: EXIT_REFUSAL,
+        ErrorCode.SPOTIFY_ERROR: EXIT_FAILURE,
+        ErrorCode.PLAYLIST_ITEMS_UNAVAILABLE: EXIT_REFUSAL,
+        ErrorCode.INTERNAL_ERROR: EXIT_FAILURE,
+        ErrorCode.NOT_IMPLEMENTED: EXIT_FAILURE,
+    }
 
 
 def test_every_code_carries_a_remedy():
     """docs/VISION.md principle 4: failures name the remedy."""
     from music_deck.errors import error_envelope, remedy_for
 
-    for code in sorted(FROZEN_CODES) + [ErrorCode.USAGE, ErrorCode.NOT_IMPLEMENTED]:
+    for code in sorted(FROZEN_CODES):
         assert remedy_for(code).strip()
         envelope = error_envelope(code, "something went wrong")["error"]
         assert set(envelope) >= {"code", "message", "remedy"}
