@@ -698,7 +698,7 @@ def test_the_environment_and_the_argument_both_beat_the_default(monkeypatch):
     ]
 
 
-def test_every_provider_music_deck_offers_resolves_a_model_or_says_why_not():
+def test_every_provider_music_deck_offers_resolves_a_model_or_says_why_not(monkeypatch):
     """No provider may silently resolve somebody else's default.
 
     The library's own default is ``anthropic``/``claude-sonnet-5`` *together*, so
@@ -706,6 +706,7 @@ def test_every_provider_music_deck_offers_resolves_a_model_or_says_why_not():
     account for an Anthropic model. Either music-deck knows a model for a
     provider, or it refuses naming ``MUSIC_DECK_MODEL``. There is no third case.
     """
+    monkeypatch.delenv(intel.MODEL_ENV_VAR, raising=False)
     engine = intel.AmplifierIntelligence()
 
     for provider in intel.PROVIDER_ORDER:

@@ -56,7 +56,7 @@ This is the one field that will silently cost you an afternoon.
 Enter exactly:
 
 ```
-http://127.0.0.1
+http://127.0.0.1:8888
 ```
 
 Three rules are being obeyed there, all enforced by Spotify since 2025:
@@ -65,10 +65,10 @@ Three rules are being obeyed there, all enforced by Spotify since 2025:
   even though it means the same thing to your machine. Use the IP literal.
 - **HTTP is only allowed for a loopback address.** `127.0.0.1` (or `[::1]` for
   IPv6) is a loopback address, so plain `http` is fine here and only here.
-- **Leave the port off.** Registering a loopback literal with no port lets
-  music-deck add a freshly-chosen port at sign-in time, which is exactly what it
-  does — it never squats on a fixed port. This is supported *only* for loopback
-  literals.
+- **Keep the port.** Register `http://127.0.0.1:8888` exactly. music-deck binds
+  that fixed port at sign-in; a portless registration does not match the URI it
+  uses. To choose a different port, first run `music-deck setup --port <n>`,
+  then register the exact URI it prints.
 
 ## Step 4 — Copy the client ID
 
@@ -122,6 +122,11 @@ music-deck login
 This opens your browser, you approve the scopes, and the token lands at
 `~/.local/state/music-deck/token.json` with permissions `0600` — readable by
 you and nobody else.
+
+If the tool host is reached over SSH, run `music-deck login --no-browser` on
+that host. Before opening the authorisation URL it prints, run the exact
+`ssh -L` command that `login` prints from the browser machine. This forwards the
+registered loopback port to the listener waiting on the tool host.
 
 ---
 

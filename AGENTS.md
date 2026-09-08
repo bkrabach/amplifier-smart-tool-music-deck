@@ -16,7 +16,8 @@ people here follow.
   probably one.
 - **Contract** — a short promise this project must keep, in `contracts/`. A
   contract is *locked* (heading carries `(FROZEN <date>)`) or *draft*. This
-  repo has three: `cli.v1.md`, `boundary.v1.md`, `plan.v1.md` — all `(DRAFT)`.
+  repo has four: `cli.v1.md`, `boundary.v1.md`, `plan.v1.md`, and
+  `refusals.v1.md` — all `(DRAFT)`.
 
 ## 1. Converge toward the vision and the contracts
 
@@ -67,6 +68,13 @@ uv run <path-to-amplifier-smart-tools>/conformance/run.py .
 ```
 
 Per-contract kits live at `conformance/<contract>/run.py` — not built yet.
+
+CI at `.github/workflows/ci.yml` builds wheel and source-distribution artifacts,
+then runs `pytest -m 'not live'` and command smokes against installed copies
+from a scratch directory with isolated HOME/XDG directories. It has no secrets
+and makes no Spotify, account, provider, or model calls. The pinned upstream kit
+must report exactly 15 pass, 0 fail, and 0 skip; ordinary pytest skips remain
+separate and reported.
 
 Rules for the check itself:
 
