@@ -52,6 +52,18 @@ back empty, then writes — and reports the playlist as read back from Spotify,
 not as it intended it. Both ceilings (turns, Spotify requests) are in the
 result, along with every query it tried and what each returned.
 
+To compare that account view with a bounded, read-only local observation:
+
+```
+music-deck devices --local
+```
+
+The Web API device list remains separate. `--local` browses only
+`_spotify-connect._tcp.local.` on Linux only, through an UP multicast physical
+private IPv4 interface, then reads a validated receiver's `getInfo` metadata. It neither
+logs a receiver in nor makes it playable or controllable; an empty completed
+window means only that no advertisement was seen during that window.
+
 Or, if you want to check the middle before anything touches your account:
 
 ```

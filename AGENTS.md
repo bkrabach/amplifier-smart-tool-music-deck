@@ -82,6 +82,10 @@ both caught library exceptions and CLI envelopes. At external failure boundaries
 retain only reviewed diagnostics, never raw messages, codes, or payloads that
 may contain credentials.
 
+Keep LAN observation separate from authenticated Spotify Web API behavior:
+authenticate and complete the Web API read before any opt-in local traffic, and
+never present discovery as playback support.
+
 Rules for the check itself:
 
 - **A check that cannot run reports "Can't check," never a pass.** Where a

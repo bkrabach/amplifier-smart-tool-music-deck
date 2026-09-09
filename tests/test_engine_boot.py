@@ -856,7 +856,12 @@ def test_the_engine_is_not_a_dependency_of_a_deterministic_install():
     metadata = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     base = metadata["project"]["dependencies"]
 
-    assert base == ["pyyaml>=6.0"], f"a model-stack dependency crept into base: {base}"
+    assert base == [
+        "httpx>=0.28",
+        "ifaddr>=0.2.0",
+        "pyyaml>=6.0",
+        "zeroconf>=0.151.3",
+    ], f"a model-stack dependency crept into base: {base}"
     assert "amplifier-agent" not in metadata["project"].get("optional-dependencies", {})
 
 
