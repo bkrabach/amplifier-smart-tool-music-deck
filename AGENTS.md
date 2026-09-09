@@ -93,6 +93,14 @@ data are not. Keep raw evidence in `.private/`, excluded from Git and packages.
 Before pushing, review file content, commit identities, history, and public
 PR/CI text. Removing a value from HEAD does not remove it from history.
 
+`do` is not equivalent to the full deterministic CLI: it has no implicit
+conversation history, device support, saved-library tools, or deterministic
+playlist controls. A creation request for `public: false` does not prove a
+playlist's later visibility; perform a fresh metadata read before claiming it
+is absent from the profile. This field is not an access-control guarantee.
+Any new public content class needs a fresh-context outsider review,
+and public docs must never carry private live evidence.
+
 Rules for the check itself:
 
 - **A check that cannot run reports "Can't check," never a pass.** Where a

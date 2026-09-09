@@ -141,10 +141,14 @@ months is left before you hit it.
 
 **Access tokens last one hour** and music-deck refreshes them for you.
 
-**Playback needs a device that is already playing.** music-deck produces no
-audio of its own. Start something on your phone, your desktop app, or a speaker,
-and music-deck can then pause it, skip it, change its volume, or move it
-elsewhere. With nothing playing, playback verbs refuse with `no_active_device`.
+**Playback controls are separate and apply only to eligible Spotify Web API devices.**
+music-deck produces no audio of its own. `music-deck devices` lists authenticated
+Spotify API devices; an already-playing phone, desktop app, or speaker is not
+necessarily API-controllable and may reject a write. With nothing playing,
+`now-playing` refuses with `no_active_device`. Local discovery (`devices --local`)
+is only a Linux mDNS observation of advertised receivers, not evidence of account
+binding, login, activation, or playback control. See [usage.md](usage.md) for
+control boundaries and playlist-visibility precautions.
 
 **You cannot check for Premium in advance.** Spotify removed the field that used
 to say whether an account is Premium, so music-deck learns it the same way you
