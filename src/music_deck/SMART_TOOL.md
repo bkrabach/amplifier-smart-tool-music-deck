@@ -162,7 +162,13 @@ Drive whatever is already playing:
 
 ```
 music-deck devices
+music-deck devices --local
 music-deck pause
 ```
+
+`devices --local` is a bounded, Linux-only, UP-multicast physical IPv4,
+read-only observation of local Spotify Connect
+advertisements. Its `local` result stays separate from Spotify's account device
+list and does not establish playback support, control, or login on a receiver.
 
 This body is free-form guidance. Nothing depends on a particular sentence in it.

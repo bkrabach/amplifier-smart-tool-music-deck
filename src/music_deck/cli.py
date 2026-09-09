@@ -81,6 +81,7 @@ class Arg:
     choices: tuple[str, ...] | None = None
     default: Any = None
     repeated: bool = False
+    track_presence: bool = False
 
     @property
     def positional(self) -> bool:
@@ -349,8 +350,20 @@ def _handle_now_playing(_args: argparse.Namespace) -> Any:
     return player.now_playing()
 
 
-def _handle_devices(_args: argparse.Namespace) -> dict[str, Any]:
-    return player.devices()
+def _handle_devices(args: argparse.Namespace) -> dict[str, Any]:
+    if not args.local and (
+        args.interface is not None or getattr(args, "_given_discovery_timeout", False)
+    ):
+        raise MusicDeckError(
+            ErrorCode.USAGE,
+            "Local discovery options need --local.",
+            "Pass --local with --discovery-timeout or --interface, or omit those options.",
+        )
+    return player.devices(
+        local=args.local,
+        discovery_timeout_s=args.discovery_timeout,
+        interface=args.interface,
+    )
 
 
 def _handle_queue(_args: argparse.Namespace) -> dict[str, Any]:
@@ -856,11 +869,27 @@ VERBS: Final[tuple[Verb, ...]] = (
     Verb(
         "devices",
         "List the account's available Spotify Connect devices.",
-        "A JSON object with a `devices` list.",
+        "A JSON object with a `devices` list; `--local` adds separate local observations.",
+        args=(
+            Arg("--local", "flag", "Observe local Spotify Connect advertisements too."),
+            Arg(
+                "--discovery-timeout",
+                "integer",
+                "Seconds to observe local advertisements (1 through 15).",
+                default=5,
+                track_presence=True,
+            ),
+            Arg(
+                "--interface",
+                "string",
+                "Private numeric local IPv4 address to use for local discovery.",
+            ),
+        ),
         handler=_handle_devices,
         detail=(
             "Only Spotify clients already running and signed in appear here. An "
-            "empty list is a real answer -- and the one to read before `transfer`."
+            "empty list is a real answer -- and the one to read before `transfer`. "
+            "`--local` is read-only discovery, not playback support."
         ),
     ),
     Verb(
@@ -1199,6 +1228,14 @@ class _Parser(argparse.ArgumentParser):
         raise SystemExit(status)
 
 
+class _MarkProvided(argparse.Action):
+    """Store an option and retain whether it was explicitly supplied."""
+
+    def __call__(self, parser, namespace, values, option_string=None) -> None:  # type: ignore[no-untyped-def]
+        setattr(namespace, self.dest, values)
+        setattr(namespace, f"_given_{self.dest}", True)
+
+
 def _add_args(parser: argparse.ArgumentParser, args: Sequence[Arg]) -> None:
     for arg in args:
         options: dict[str, Any] = {"help": arg.help}
@@ -1210,6 +1247,8 @@ def _add_args(parser: argparse.ArgumentParser, args: Sequence[Arg]) -> None:
                 options["choices"] = list(arg.choices)
             if arg.default is not None:
                 options["default"] = arg.default
+            if arg.track_presence:
+                options["action"] = _MarkProvided
         if arg.positional:
             if arg.repeated:
                 options["nargs"] = "+"

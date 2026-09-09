@@ -18,7 +18,10 @@ license = { text = "MIT" }
 # SMART_TOOL.md's frontmatter is YAML and `music_deck.manifest()` parses the
 # copy built into the package (cli.v1 Core 7).
 dependencies = [
+    "httpx>=0.28",
+    "ifaddr>=0.2.0",
     "pyyaml>=6.0",
+    "zeroconf>=0.151.3",
 ]
 
 [project.optional-dependencies]

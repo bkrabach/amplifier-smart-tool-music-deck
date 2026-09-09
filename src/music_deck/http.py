@@ -155,7 +155,7 @@ class Transport(Protocol):
 
 
 class UrllibTransport:
-    """The real one. The only class in music-deck that touches a socket."""
+    """The authenticated Spotify Web API transport."""
 
     def send(self, request: Request, timeout_s: float = DEFAULT_TIMEOUT_S) -> Response:
         native = urllib.request.Request(
