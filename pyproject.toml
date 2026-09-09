@@ -49,6 +49,9 @@ build-backend = "hatchling.build"
 # Private runtime evidence must not ship, even when a build ignores VCS rules.
 exclude = [
     "/.private",
+    "/.converge",
+    "/GOAL.md",
+    "/DONE.json",
     "/scratch",
     "/evidence/live-round-trip-*.md",
     "/.env",
