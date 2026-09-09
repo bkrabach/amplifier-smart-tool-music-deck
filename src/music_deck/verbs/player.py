@@ -30,6 +30,7 @@ must expect rather than a precondition music-deck can screen for.
 
 from __future__ import annotations
 
+import ipaddress
 from typing import Any, Final
 
 from music_deck.errors import ErrorCode, MusicDeckError
@@ -75,6 +76,21 @@ def _usage(message: str, remedy: str) -> MusicDeckError:
     return MusicDeckError(ErrorCode.USAGE, message, remedy)
 
 
+def _private_ipv4(value: str | None) -> bool:
+    try:
+        address = ipaddress.ip_address(value or "")
+    except ValueError:
+        return False
+    return isinstance(address, ipaddress.IPv4Address) and any(
+        address in network
+        for network in (
+            ipaddress.ip_network("10.0.0.0/8"),
+            ipaddress.ip_network("172.16.0.0/12"),
+            ipaddress.ip_network("192.168.0.0/16"),
+        )
+    )
+
+
 def _device_params(device: str | None) -> dict[str, Any]:
     """``device_id`` when the caller named one, nothing when they did not.
 
@@ -111,16 +127,41 @@ def now_playing(*, client: SpotifyClient | None = None) -> Any:
     return _client(client).get(PLAYER)
 
 
-def devices(*, client: SpotifyClient | None = None) -> dict[str, Any]:
+def devices(
+    *,
+    client: SpotifyClient | None = None,
+    local: bool = False,
+    discovery_timeout_s: int = 5,
+    interface: str | None = None,
+    observer: Any | None = None,
+) -> dict[str, Any]:
     """Every Spotify Connect device the account can see -- ``GET /me/player/devices``.
 
-    Only clients that are already running and signed in appear here. An empty
-    list is a real answer, and the one to read before ``transfer``.
+    The default list is Spotify's authenticated view of clients already running
+    and signed in. With ``local=True``, a separate, read-only Linux local
+    observation is appended; it neither changes that list nor enables playback.
     """
+    if not isinstance(discovery_timeout_s, int) or isinstance(discovery_timeout_s, bool) or not 1 <= discovery_timeout_s <= 15:
+        raise _usage(
+            f"--discovery-timeout must be an integer from 1 to 15; got {discovery_timeout_s!r}.",
+            "Pass a value from 1 through 15, or leave it at 5.",
+        )
+    if not local and (interface is not None or discovery_timeout_s != 5):
+        raise _usage(
+            "Local discovery options need --local.",
+            "Pass --local with --discovery-timeout or --interface, or omit those options.",
+        )
+    if interface is not None:
+        if not _private_ipv4(interface):
+            raise _usage(
+                f"--interface must be a private numeric IPv4 address; got {interface!r}.",
+                "Pass an address assigned to an eligible local interface.",
+            )
+
     payload = _client(client).get(DEVICES)
     found = payload.get("devices") if isinstance(payload, dict) else None
     found = found if isinstance(found, list) else []
-    return {
+    result = {
         "devices": found,
         "count": len(found),
         "active": next(
@@ -128,6 +169,17 @@ def devices(*, client: SpotifyClient | None = None) -> dict[str, Any]:
             None,
         ),
     }
+    if local:
+        if observer is None:
+            # Deliberately lazy: plain `devices` imports neither zeroconf nor
+            # httpx and sends no local-network traffic.
+            from music_deck.local_connect import LocalConnectObserver
+
+            observer = LocalConnectObserver()
+        result["local"] = observer.observe(
+            found, discovery_timeout_s=discovery_timeout_s, interface=interface
+        )
+    return result
 
 
 def queue(*, client: SpotifyClient | None = None) -> dict[str, Any]:
