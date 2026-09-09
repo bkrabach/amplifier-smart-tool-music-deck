@@ -85,6 +85,37 @@ A successful projected read exits 0 without requiring a playlist. `do` records e
 
 A successful `do` result includes the playlist and tracks when playlist readback applies, projected tool results, searches, actions, per-operation completed/refused/unknown states, completeness, ceilings, and transcript. Both ceilings are reported. The defaults are 8 native tool calls and 40 actual outbound Spotify requests, including retries and refresh traffic; a larger request may need explicit budgets, but limits do not guarantee completion.
 
+## Evaluating a provider run without Spotify or LAN traffic
+
+The installed evaluator calls the production CLI dispatch, then forwards only
+the original `do` implementation to closed in-memory Spotify and LAN doubles.
+It does not make Spotify, mDNS, receiver, or account requests. It does call the
+provider and model you explicitly select, so run it only with a deliberate
+provider configuration:
+
+```sh
+python -m music_deck.evaluation \
+  --scenario playlist \
+  --provider <provider> --model <model> \
+  --confirm-real-provider
+```
+
+`playlist` grades the exact submitted playlist name and six-track fixture order
+from an independent readback. `readonly-inventory` requires saved-library and
+authenticated API-device reads plus exactly one later LAN observation, with no
+write. `no-playback` requires the recorded refusal of a player action with no
+player send. `unknown-write` injects one interrupted playlist creation and
+requires the resulting unknown-write stop without an automatic retry. Each
+writes a uniquely named short scrubbed grade record under
+`.private/eval-evidence/` in the current directory by default (or
+`--output-dir DIR`), with owner-only directory and file modes.
+
+`named-session` is a deliberate blocked scenario until named continuation is
+implemented. It makes no provider call and exits `4`, not success. Scripted
+offline evaluator tests prove the fake-boundary wiring and wrong-outcome
+rejections; they do **not** prove a provider made native tool calls. A manager
+must review this evaluator before any real-provider run.
+
 ## Safe testing
 
 1. Use a dedicated test account and unambiguous synthetic playlist names.
