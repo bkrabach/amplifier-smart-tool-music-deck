@@ -17,27 +17,20 @@ music-deck do "Create a playlist named Weekend Guitar with these songs in this o
   --max-turns 14 --max-requests 30
 ```
 
-Within one invocation, `do` can use exactly these native tools:
+Within one invocation, `do` can use the closed supported music-domain tool catalog: all supported catalog search kinds and typed reads; a projected account profile; playlist list/items/create/add/remove/reorder/rename; library list/save/remove/contains including Liked Songs; following, top, recently played, now playing, devices, and queue; Spotify API playback controls; and a structured in-memory plan application. `finish` only ends the native run; it is not a music operation or a playlist-written criterion.
 
-- `search` for tracks or albums
-- `list_playlists` and `playlist_tracks`
-- `create_playlist` and `add_to_playlist`
-- `finish`
+The model cannot use login, setup, disconnect, raw check, manifest or session administration, recursive `plan`/`do`, shell, files, web, general network, browser, delegation, MCP, or engine built-ins. Each exposed tool has a closed JSON schema; results are projections rather than raw account payloads.
 
-It can inspect returned titles and artists, discover a playlist by name, and read back the tracks it writes. It cannot rename, remove, reorder, inspect devices, control playback, or read the saved/Liked Songs library through `do`.
+## Effects and a later fresh request
 
-## Follow up by naming the target again
-
-Every CLI or Python `do` call creates a fresh, ephemeral engine session. It has no history or session-continuation option. A reference such as “that playlist from the previous message” has no built-in meaning in a later call.
-
-Use the exact playlist name or a playlist ID in the new request:
+`--read-only` blocks every playlist, library, player, and nested-plan write before Spotify is contacted. `--no-playback` blocks player writes while allowing playlist and library work. `--local` is required for one bounded, read-only local Connect observation, only after the authenticated API device read; it does not activate a receiver or grant playback control.
 
 ```sh
-music-deck do "Find the playlist named Weekend Guitar, read its tracks, then append Debaser by Pixies and Cut Your Hair by Pavement." \
-  --max-turns 14 --max-requests 30
+music-deck do "List my saved tracks and current queue." --read-only
+music-deck do "Add Debaser by Pixies to Weekend Guitar, but do not control playback." --no-playback
 ```
 
-An outer agent may remember the name or ID and make a new `do` call. That is outer-agent state, not native `do` conversation memory. For an exact ID-targeted read or edit, use deterministic commands instead.
+Every CLI or Python `do` call in this build is fresh and ephemeral. Named create/resume sessions and session list/delete commands are not implemented; there is no implicit selection of a latest session. A reference such as “that playlist from the previous message” has no built-in meaning in a later call, so name the playlist or ID again. For an exact ID-targeted read or edit, use deterministic commands.
 
 ## Deterministic reads and controls
 
@@ -54,7 +47,7 @@ music-deck devices
 
 `music-deck devices` lists authenticated Spotify Web API devices. `music-deck devices --local` additionally performs a bounded Linux-only mDNS observation of `_spotify-connect._tcp.local.` across eligible physical private-IPv4 multicast interfaces and reads credential-free receiver metadata. Its local observations remain separate from the cloud device list: an advertised receiver is not proven account-bound, API-controllable, or logged in. No local activation or playback is implemented.
 
-Playback verbs exist only as deterministic commands for eligible API devices. They have effects; for example, `music-deck pause` pauses playback. Do not include a playback write in installation or readiness checks, and do not assume anything already playing accepts API control.
+Both `do` and deterministic commands can request playback controls for eligible API devices. They have effects; for example, `music-deck pause` requests that Spotify pause playback. Do not include a playback write in installation or readiness checks, do not assume anything already playing accepts API control, and treat an HTTP acknowledgement as acknowledged rather than independently verified playback.
 
 ## Python use and failure handling
 
@@ -67,7 +60,7 @@ from music_deck.verbs.do import do
 brief = "Create a playlist named Documentation Demo with Song 2 by Blur."
 
 try:
-    result = do(brief, max_turns=14, max_requests=30)
+    result = do(brief, max_turns=14, max_requests=30, no_playback=True)
 except MusicDeckError as exc:
     print(exc.code)       # e.g. "partial_result"
     print(exc.message)
@@ -88,9 +81,40 @@ The CLI prints a failure envelope on stdout:
 
 ## Read results before treating work as complete
 
-`do` is write-oriented. A successful read-only answer, an honest inability, or a run that writes nothing returns `partial_result` with exit status 2—not ordinary exit 0. Its error data can include `result` and `completeness`; inspect them before retrying. Use deterministic read commands for reads.
+A successful projected read exits 0 without requiring a playlist. `do` records each operation's effect as observed, acknowledged, verified, unknown, or refused as applicable. An HTTP acknowledgement alone is not proof that Spotify made the requested change; inspect a relevant readback before treating an effect as verified. Incomplete or unknown work returns `partial_result` with `result` and `completeness`; do not blindly replay an uncertain write.
 
-A successful `do` result includes the playlist and tracks read back from Spotify, searches, actions, completeness, ceilings, and transcript. Both ceilings are reported. The defaults are 8 native tool calls and 40 Spotify requests; a larger request may need explicit budgets, but limits do not guarantee completion.
+A successful `do` result includes the playlist and tracks when playlist readback applies, projected tool results, searches, actions, per-operation completed/refused/unknown states, completeness, ceilings, and transcript. Both ceilings are reported. The defaults are 8 native tool calls and 40 actual outbound Spotify requests, including retries and refresh traffic; a larger request may need explicit budgets, but limits do not guarantee completion.
+
+## Evaluating a provider run without Spotify or LAN traffic
+
+The installed evaluator calls the production CLI dispatch, then forwards only
+the original `do` implementation to closed in-memory Spotify and LAN doubles.
+It does not make Spotify, mDNS, receiver, or account requests. It does call the
+provider and model you explicitly select, so run it only with a deliberate
+provider configuration:
+
+```sh
+python -m music_deck.evaluation \
+  --scenario playlist \
+  --provider <provider> --model <model> \
+  --confirm-real-provider
+```
+
+`playlist` grades the exact submitted playlist name and six-track fixture order
+from an independent readback. `readonly-inventory` requires saved-library and
+authenticated API-device reads plus exactly one later LAN observation, with no
+write. `no-playback` requires the recorded refusal of a player action with no
+player send. `unknown-write` injects one interrupted playlist creation and
+requires the resulting unknown-write stop without an automatic retry. Each
+writes a uniquely named short scrubbed grade record under
+`.private/eval-evidence/` in the current directory by default (or
+`--output-dir DIR`), with owner-only directory and file modes.
+
+`named-session` is a deliberate blocked scenario until named continuation is
+implemented. It makes no provider call and exits `4`, not success. Scripted
+offline evaluator tests prove the fake-boundary wiring and wrong-outcome
+rejections; they do **not** prove a provider made native tool calls. A manager
+must review this evaluator before any real-provider run.
 
 ## Safe testing
 

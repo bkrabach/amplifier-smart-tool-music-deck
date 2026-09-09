@@ -161,5 +161,9 @@ music-deck disconnect
 ```
 
 deletes the token and every locally cached byte of Spotify content, and reports
-what it deleted. Revoke the app itself at
+what it deleted. Current `do` calls are ephemeral, so this build creates no
+managed conversation history. The ratified managed-continuation direction requires
+any future named conversation history and native checkpoints to live under the
+music-deck state directory and be purged by `disconnect`; do not treat that direction
+as available until the installed command reports it. Revoke the app itself at
 <https://www.spotify.com/account/apps/>.

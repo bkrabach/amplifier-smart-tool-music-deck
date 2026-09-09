@@ -16,8 +16,8 @@ people here follow.
   probably one.
 - **Contract** — a short promise this project must keep, in `contracts/`. A
   contract is *locked* (heading carries `(FROZEN <date>)`) or *draft*. This
-  repo has four: `cli.v1.md`, `boundary.v1.md`, `plan.v1.md`, and
-  `refusals.v1.md` — all `(DRAFT)`.
+  repo has five: `cli.v1.md`, `boundary.v1.md`, `plan.v1.md`,
+  `refusals.v1.md`, and `do.v1.md` — all `(DRAFT)`.
 
 ## 1. Converge toward the vision and the contracts
 
@@ -93,11 +93,13 @@ data are not. Keep raw evidence in `.private/`, excluded from Git and packages.
 Before pushing, review file content, commit identities, history, and public
 PR/CI text. Removing a value from HEAD does not remove it from history.
 
-`do` is not equivalent to the full deterministic CLI: it has no implicit
-conversation history, device support, saved-library tools, or deterministic
-playlist controls. A creation request for `public: false` does not prove a
-playlist's later visibility; perform a fresh metadata read before claiming it
-is absent from the profile. This field is not an access-control guarantee.
+`do.v1` governs bounded native music-domain tools and explicit named
+continuation; current implementation evidence, not this standing rule,
+determines what has landed. `do` never selects implicit history, grants
+administrative or general-purpose tools, or turns local discovery into playback
+support. A creation request for `public: false` does not prove a playlist's
+later visibility; perform a fresh metadata read before claiming it is absent
+from the profile. This field is not an access-control guarantee.
 Any new public content class needs a fresh-context outsider review,
 and public docs must never carry private live evidence.
 

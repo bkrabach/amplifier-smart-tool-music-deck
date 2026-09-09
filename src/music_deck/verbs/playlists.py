@@ -92,20 +92,40 @@ def _partial(
     ``cli.v1`` Core 6: ``partial_result`` carries "a ``completeness`` block
     naming what succeeded and failed -- never a silently truncated success".
     """
+    unknown_write = failure.diagnostic_code == "network_unreachable"
+    if unknown_write:
+        message = (
+            f"{done} of {requested} items were {action}, then the next Spotify "
+            "write had an unknown outcome."
+        )
+        remedy = (
+            "Do not retry the unresolved write automatically. Read the playlist "
+            "state, then repeat only work you can confirm did not complete."
+        )
+    else:
+        message = (
+            f"{done} of {requested} items were {action}, then Spotify refused "
+            f"`{failure.code}`: {failure.message}"
+        )
+        remedy = (
+            "Re-run with only the items that did not land; the ones already "
+            f"{action} are in the playlist. Then read the remedy for "
+            f"`{failure.code}`: {failure.remedy}"
+        )
+    completeness = {
+        "requested": requested,
+        "succeeded": done,
+        "failed": requested - done,
+        "requests_sent": sent,
+        "underlying_code": failure.code,
+    }
+    if unknown_write:
+        completeness["unknown_write"] = True
     return MusicDeckError(
         ErrorCode.PARTIAL_RESULT,
-        f"{done} of {requested} items were {action}, then Spotify refused "
-        f"`{failure.code}`: {failure.message}",
-        "Re-run with only the items that did not land; the ones already "
-        f"{action} are in the playlist. Then read the remedy for "
-        f"`{failure.code}`: {failure.remedy}",
-        completeness={
-            "requested": requested,
-            "succeeded": done,
-            "failed": requested - done,
-            "requests_sent": sent,
-            "underlying_code": failure.code,
-        },
+        message,
+        remedy,
+        completeness=completeness,
         playlist=item_ref("playlist", playlist_id),
     )
 

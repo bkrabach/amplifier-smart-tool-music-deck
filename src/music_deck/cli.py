@@ -205,6 +205,9 @@ def _handle_do(args: argparse.Namespace) -> dict[str, Any]:
         args.brief,
         max_turns=int(getattr(args, "max_turns", DEFAULT_MAX_TURNS)),
         max_requests=int(getattr(args, "max_requests", DEFAULT_MAX_REQUESTS)),
+        read_only=bool(getattr(args, "read_only", False)),
+        no_playback=bool(getattr(args, "no_playback", False)),
+        local=bool(getattr(args, "local", False)),
     )
 
 
@@ -901,7 +904,7 @@ VERBS: Final[tuple[Verb, ...]] = (
     Verb(
         "play",
         "Start or resume playback on a device that is already available.",
-        "A JSON object confirming the playback state.",
+        "A JSON object acknowledging Spotify accepted the playback request.",
         args=(
             Arg("--uri", "string", "Spotify URI to play. Omit to resume."),
             Arg("--position-ms", "integer", "Where in the track to start."),
@@ -917,28 +920,28 @@ VERBS: Final[tuple[Verb, ...]] = (
     Verb(
         "pause",
         "Pause playback.",
-        "A JSON object confirming the playback state.",
+        "A JSON object acknowledging Spotify accepted the playback request.",
         args=(_DEVICE,),
         handler=_handle_pause,
     ),
     Verb(
         "next",
         "Skip to the next track.",
-        "A JSON object confirming the playback state.",
+        "A JSON object acknowledging Spotify accepted the playback request.",
         args=(_DEVICE,),
         handler=_handle_next,
     ),
     Verb(
         "previous",
         "Skip to the previous track.",
-        "A JSON object confirming the playback state.",
+        "A JSON object acknowledging Spotify accepted the playback request.",
         args=(_DEVICE,),
         handler=_handle_previous,
     ),
     Verb(
         "seek",
         "Seek within the current track.",
-        "A JSON object confirming the playback state.",
+        "A JSON object acknowledging Spotify accepted the playback request.",
         args=(
             Arg("position_ms", "integer", "Position in milliseconds.", required=True),
             _DEVICE,
@@ -948,7 +951,7 @@ VERBS: Final[tuple[Verb, ...]] = (
     Verb(
         "volume",
         "Set the volume on a device.",
-        "A JSON object confirming the volume.",
+        "A JSON object acknowledging Spotify accepted the volume request.",
         args=(
             Arg("percent", "integer", "Volume from 0 to 100.", required=True),
             _DEVICE,
@@ -959,7 +962,7 @@ VERBS: Final[tuple[Verb, ...]] = (
     Verb(
         "shuffle",
         "Turn shuffle on or off.",
-        "A JSON object confirming the shuffle state.",
+        "A JSON object acknowledging Spotify accepted the shuffle request.",
         args=(
             Arg("state", "string", "on or off.", required=True, choices=("on", "off")),
             _DEVICE,
@@ -969,7 +972,7 @@ VERBS: Final[tuple[Verb, ...]] = (
     Verb(
         "repeat",
         "Set the repeat mode.",
-        "A JSON object confirming the repeat mode.",
+        "A JSON object acknowledging Spotify accepted the repeat request.",
         args=(
             Arg(
                 "state",
@@ -985,7 +988,7 @@ VERBS: Final[tuple[Verb, ...]] = (
     Verb(
         "transfer",
         "Move playback to another device.",
-        "A JSON object confirming which device is now active.",
+        "A JSON object acknowledging Spotify accepted the transfer request.",
         args=(
             Arg("device_id", "string", "The device to move playback to.", required=True),
             Arg("--play", "flag", "Start playing after transferring."),
@@ -999,7 +1002,7 @@ VERBS: Final[tuple[Verb, ...]] = (
     Verb(
         "queue-add",
         "Add one item to the playback queue.",
-        "A JSON object confirming what was queued.",
+        "A JSON object acknowledging Spotify accepted the queue request.",
         args=(
             Arg("uri", "string", "Spotify track or episode URI.", required=True),
             _DEVICE,
@@ -1076,7 +1079,7 @@ VERBS: Final[tuple[Verb, ...]] = (
             Arg(
                 "--max-turns",
                 "integer",
-                "How many model turns the loop may spend.",
+                "How many native tool calls the loop may spend.",
                 default=DEFAULT_MAX_TURNS,
             ),
             Arg(
@@ -1085,20 +1088,37 @@ VERBS: Final[tuple[Verb, ...]] = (
                 "How many Spotify requests the loop may send.",
                 default=DEFAULT_MAX_REQUESTS,
             ),
+            Arg(
+                "--read-only",
+                "flag",
+                "Block every playlist, library, player, and nested-plan write before Spotify is contacted.",
+            ),
+            Arg(
+                "--no-playback",
+                "flag",
+                "Block every player write while allowing playlist and library work.",
+            ),
+            Arg(
+                "--local",
+                "flag",
+                "Permit at most one read-only local Connect observation after the authenticated API device read; this invocation only.",
+            ),
         ),
         model_backed=True,
         handler=_handle_do,
         detail=(
-            "Model-backed, and the one verb that both reads Spotify and writes to "
-            "it. Unlike `plan`, the model sees what each search actually "
-            "returned and corrects itself -- a query that returns 0 results is "
-            "retried differently rather than written to an empty playlist. Both "
-            "ceilings are reported in the result. It never creates a playlist "
-            "for an empty result set, and never writes a track URI no search in "
-            "the run returned. With no usable model substrate it exits 3 naming "
-            "the missing precondition. A run that ends with nothing written "
-            "refuses `partial_result` carrying `completeness`, and every query "
-            "it tried is listed in `searches`."
+            "Model-backed. It offers only the admitted music-domain tool catalog "
+            "(catalog, playlists, library, account/listening/player reads and "
+            "controls, and in-memory plan application), never engine built-ins "
+            "or administration. The model sees projected tool results and can "
+            "correct a zero-result search. `--read-only` blocks every mutation; "
+            "`--no-playback` blocks only player writes; `--local` permits at "
+            "most one read-only LAN observation after the API read. Both ceilings "
+            "are reported. Writes are acknowledged until a specific readback "
+            "verifies them; a successful read exits 0 without a playlist. With "
+            "no usable model substrate it exits 3 naming the missing precondition. "
+            "Each call is fresh and ephemeral: named create/resume sessions are "
+            "not implemented, and music-deck never selects a latest session."
         ),
     ),
 )
@@ -1130,6 +1150,10 @@ def terse_help() -> str:
         "`plan` and `do` use a model; every other verb runs without one.",
         f"New here? Run `{PROG} setup`: it needs no credentials and no network, "
         "and names the one command to run next.",
+        f"Read without effects: `{PROG} do \"list my saved tracks\" --read-only`.",
+        f"Create or edit while blocking player control: `{PROG} do \"…\" --no-playback`.",
+        "`do` is fresh and ephemeral: named create/resume sessions are not implemented; no latest session is selected.",
+        "`--local` observes LAN advertisements only; it never activates a receiver or grants playback control.",
         "",
         f"Run `{PROG} --help` for the complete listing: every argument, its type, and "
         "what each verb returns.",
@@ -1303,6 +1327,17 @@ def _help_request(argv: Sequence[str]) -> str | None:
     wants_terse = "-h" in argv
     if not (wants_complete or wants_terse):
         return None
+    # A help flag after a known verb asks about that verb, not the entire
+    # program. The rendered metadata remains the parser's source of truth, so
+    # this cannot invent a flag that the command does not accept.
+    if argv and not argv[0].startswith("-"):
+        verb = VERBS_BY_NAME.get(argv[0])
+        if verb is not None:
+            if len(argv) > 1 and not argv[1].startswith("-") and verb.subverbs:
+                subverb = next((item for item in verb.subverbs if item.name == argv[1]), None)
+                if subverb is not None:
+                    return "\n".join(_render_verb(subverb, f"{verb.name} "))
+            return "\n".join(_render_verb(verb))
     if wants_complete:
         return complete_help()
     return terse_help()

@@ -1,13 +1,14 @@
 This file is the static, shipped text `music-deck do` puts in a prompt.
 
-`do` declares six tools to the agent engine and the model **calls them
+`do` declares a closed music-domain tool catalog to the agent engine and the model **calls them
 natively**. music-deck runs each call against the real Spotify library and hands
 back what came back. There is no JSON-text protocol here and there must never be
 one again: on 2026-09-06 this file described tools the engine had never been
 told about, a real model made a native tool call, and the engine refused the
 turn with `provider_failed` -- "The provider requested an undeclared tool". A
 tool named in this file is a tool declared in `music_deck.verbs.do`'s
-`TOOL_DECLARATIONS`, and the two lists are the same six.
+`TOOL_DECLARATIONS`, and the two lists are the same catalog. `finish` is an
+internal lifecycle control, not a music-domain capability.
 
 Every prompt is assembled here and in `music_deck.verbs.do` -- nowhere else --
 which is what lets `boundary.v1` Core 3's transcript be the whole truth about
@@ -44,33 +45,25 @@ write one out as JSON in your reply -- call it.
 === SECTION: tools ===
 ## The tools you may call
 
-You have exactly six, and their arguments are described in the tool definitions
-themselves:
+The tool definitions name every available argument. The catalog covers:
 
-- `search` -- run one Spotify search and see the results. `query` is a Spotify
-  search expression; field filters help (`artist:`, `album:`, `track:`, `year:`
-  taking a year or a `1990-1999` range, `genre:`). Combining `genre:` with
-  `year:` is the filter pair most likely to return nothing; if it does, drop one
-  of them.
-- `list_playlists` -- the caller's own playlists, when the brief names one that
-  already exists.
-- `playlist_tracks` -- what is already in one of the caller's playlists.
-- `create_playlist` -- create a NEW playlist and put tracks in it, in one step.
-  `tracks` is required and must not be empty. There is deliberately no way to
-  create an empty playlist: if you have not found tracks yet, search again
-  first. Use the exact `uri` strings from a search result in this run -- never
-  one you wrote from memory. music-deck refuses a URI no search here returned.
-- `add_to_playlist` -- add tracks to a playlist that already exists.
-- `finish` -- stop, with a one- or two-line summary for the caller. After it,
-  reply with a single line and call no further tools.
+- catalog search across tracks, albums, artists, shows, and episodes, plus
+  typed reads of each;
+- projected account profile; playlists and their items, creation, addition,
+  removal, reordering, and renaming;
+- saved-library operations including Liked Songs, followed artists, top and
+  recently played content; projected playback, devices, and queue;
+- existing playback controls and in-memory structured plan application.
 
-Any other tool you can see is not yours to call. music-deck allows these six and
-denies everything else, and a denial ends the run.
+`finish` ends the run with a short caller summary. It is an internal lifecycle
+control, not a music-domain operation. Any other tool you can see is not yours
+to call: music-deck allows only the declared catalog and `finish`, and denies
+everything else.
 
 How to work well here:
 
-- Search before you write, every time. Judge the result by its count and its
-  contents, not by how good the query looked.
+- Search before writing track selections. Judge a search result by its count
+  and contents, not by how good the query looked.
 - If a search returns 0, try a different query. Repeating a query that returned
   nothing wastes a call you do not have.
 - If a search returns fewer than you need, run another, different search rather
@@ -78,7 +71,8 @@ How to work well here:
 - Honour every constraint in the brief -- era, mood, count, artists to avoid.
   Read the artist names and titles that came back and drop the ones that do not
   fit; you can see them, so use them.
-- When the brief asks for a number of songs, put at least that many in.
+- Do not describe an HTTP acknowledgement as a verified effect. The caller sees
+  `acknowledged` until a read confirms a result.
 - Call `finish` as soon as the work is done. Do not keep searching for polish.
 
 === SECTION: brief ===
@@ -91,4 +85,5 @@ The caller's own words, verbatim. This is the request.
 
 This run is bounded, and music-deck enforces both numbers itself. When either is
 spent the run stops where it is and the caller is told what was and was not
-finished -- so spend what you have on the shortest path to a written playlist.
+finished -- so spend what you have on the shortest path to the requested observed
+read or effect.

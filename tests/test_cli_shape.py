@@ -240,6 +240,16 @@ def test_complete_help_lists_the_no_browser_flag_on_login(scratch):
     assert "--no-browser" not in terse
 
 
+def test_do_subcommand_help_is_specific_and_matches_the_parser(scratch):
+    """A caller can ask for the exact model-backed command without scanning all help."""
+    complete = run("do", "--help", cwd=scratch).stdout
+    terse = run("do", "-h", cwd=scratch).stdout
+    for text in ("music-deck do", "--read-only", "--no-playback", "--local", "arguments:", "returns:"):
+        assert text in complete
+        assert text in terse
+    assert "music-deck login" not in complete
+
+
 def test_complete_help_gives_arguments_types_and_return_shapes(scratch):
     complete = run("--help", cwd=scratch).stdout
     assert "arguments:" in complete
