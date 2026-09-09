@@ -207,7 +207,8 @@ def test_removing_a_playlist_is_the_only_way_a_created_playlist_comes_back_off(
     ability to undo a playlist it created, which is why the shape of it matters
     more here than anywhere else in the file.
     """
-    playlist_uri = "spotify:playlist:0000000000000000000000"
+    playlist_id = "0" * 22  # Synthetic: never a playlist from a real account.
+    playlist_uri = f"spotify:playlist:{playlist_id}"
     transport = use_fake_transport(monkeypatch, FakeTransport([_library_endpoint]))
 
     code, document, _ = run_cli(capsys, "library", "remove", playlist_uri)
@@ -217,7 +218,7 @@ def test_removing_a_playlist_is_the_only_way_a_created_playlist_comes_back_off(
     assert query_of(transport.requests[0].url) == {"uris": playlist_uri}
     assert document["removed"] == 1
     with pytest.raises(RemovedEndpointError):
-        check_removed("DELETE", "/playlists/0000000000000000000000/followers")
+        check_removed("DELETE", f"/playlists/{playlist_id}/followers")
 
 
 def test_the_body_shape_this_endpoint_refuses_is_refused_here_too(

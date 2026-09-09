@@ -49,7 +49,7 @@ did send, which reads like a serialization bug and is in fact the wrong
 transport.
 
 Measured live against ``api.spotify.com`` on 2026-09-06, one account, one empty
-playlist (``spotify:playlist:0000000000000000000000``), four requests:
+temporary playlist (account-linked identifier omitted), four requests:
 
 ============================================ ======================================
 Request                                      Answer

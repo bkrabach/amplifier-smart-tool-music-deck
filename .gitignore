@@ -3,3 +3,10 @@ __pycache__/
 *.egg-info/
 dist/
 .pytest_cache/
+
+# Local diagnostics can contain account data, prompts, and machine identities.
+/.private/
+/scratch/
+/evidence/live-round-trip-*.md
+.env
+.env.*

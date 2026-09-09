@@ -86,6 +86,13 @@ Keep LAN observation separate from authenticated Spotify Web API behavior:
 authenticate and complete the Web API read before any opt-in local traffic, and
 never present discovery as playback support.
 
+Publication privacy: use synthetic account/device fixtures, never identifiers
+copied from live runs. GitHub handles, repository URLs, and GitHub noreply
+attribution are permitted; personal emails, home paths, hostnames, and account
+data are not. Keep raw evidence in `.private/`, excluded from Git and packages.
+Before pushing, review file content, commit identities, history, and public
+PR/CI text. Removing a value from HEAD does not remove it from history.
+
 Rules for the check itself:
 
 - **A check that cannot run reports "Can't check," never a pass.** Where a

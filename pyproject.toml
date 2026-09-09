@@ -45,6 +45,16 @@ music-deck = "music_deck.cli:main"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.build]
+# Private runtime evidence must not ship, even when a build ignores VCS rules.
+exclude = [
+    "/.private",
+    "/scratch",
+    "/evidence/live-round-trip-*.md",
+    "/.env",
+    "/.env.*",
+]
+
 [tool.hatch.build.targets.wheel]
 # SMART_TOOL.md lives inside the package directory so it ships with the tool
 # and `music_deck.manifest()` can read it via importlib.resources from an

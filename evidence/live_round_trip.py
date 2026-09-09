@@ -47,9 +47,10 @@ it can pass:
    transcript, and the one playlist the run created. Any other Spotify id, URI
    or link found in the document refuses the write. Since 2026-09-06 this is
    **this script's own discipline, not a contract requirement**: `boundary.v1`
-   Core 8 now lets an artifact the caller asked for carry Spotify content. Kept
-   anyway, because an evidence file is committed to a repository and a record of
-   somebody's listening habits is not what a reviewer came to read.
+   Core 8 now lets an artifact the caller asked for carry Spotify content.
+   This record is private local evidence, not a publication-safe report: it can
+   still contain account identifiers, personal brief text, and machine paths.
+   Never commit or upload it; publish only separately reviewed anonymous outcomes.
 
 `--self-test` exercises all four gates against synthetic inputs, with no
 Spotify account, no provider and no network. That is the part a lane can run;
@@ -75,7 +76,7 @@ from pathlib import Path
 from typing import Any, Final, Sequence
 
 REPO_ROOT: Final = Path(__file__).resolve().parent.parent
-EVIDENCE_DIR: Final = REPO_ROOT / "evidence"
+EVIDENCE_DIR: Final = REPO_ROOT / ".private" / "evidence"
 
 EXIT_PASS: Final = 0
 EXIT_FAIL: Final = 1
@@ -809,10 +810,11 @@ def _fenced(text: str, language: str) -> str:
 def write_evidence(
     text: str, *, path: Path, secrets: Sequence[Secret], allow_ids: Sequence[str]
 ) -> tuple[bool, str]:
-    """Write the document, or refuse and say which gate stopped it.
+    """Write private local evidence, or refuse and say which gate stopped it.
 
     Redaction happens first and the scan happens after, so the scan is checking
     what will actually be on disk -- not a copy that was cleaned separately.
+    Credential redaction is not a PII audit. The document is not safe to publish.
     """
     cleaned = redact(text, secrets)
 
@@ -832,8 +834,21 @@ def write_evidence(
             f"{' and more' if len(content) > 5 else ''}."
         )
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(cleaned, encoding="utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temporary: str | None = None
+    try:
+        # NamedTemporaryFile creates mode 0600; atomic replacement also fixes
+        # permissions on an existing output without exposing a partial document.
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, delete=False
+        ) as output:
+            temporary = output.name
+            output.write(cleaned)
+        os.replace(temporary, path)
+        temporary = None
+    finally:
+        if temporary is not None:
+            os.unlink(temporary)
     return True, f"wrote {path}"
 
 
@@ -1101,7 +1116,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="live_round_trip.py",
         description=(
             "The owner's live round trip: login -> plan -> apply -> the playlist "
-            "exists. Writes evidence/live-round-trip-<date>.md."
+            "exists. Writes private .private/evidence/live-round-trip-<date>.md."
         ),
     )
     parser.add_argument(
@@ -1110,7 +1125,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--out",
         default=None,
-        help="Where to write the evidence document. Default: evidence/live-round-trip-<date>.md",
+        help=(
+            "Where to write private evidence. Default: "
+            ".private/evidence/live-round-trip-<date>.md. "
+            "Custom destinations must also stay out of version control and uploads."
+        ),
     )
     parser.add_argument(
         "--music-deck", default=None, help="Path to the music-deck binary to exercise."
@@ -1205,8 +1224,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             "block in the evidence file says which step asked for more than it kept."
         )
     print(
-        "      Commit the evidence file. Delete the playlist from Spotify whenever "
-        "you like -- the evidence is the record, not the playlist."
+        "      Keep this evidence private; do not commit or upload it. Publish only "
+        "a separately reviewed anonymous summary of the checks and counts. "
+        "Delete the playlist from Spotify whenever you like."
     )
     return EXIT_PASS
 

@@ -7,7 +7,7 @@ playlist exists, run against a real Spotify account.
 | File | What it is |
 |---|---|
 | `live_round_trip.py` | The script that performs the round trip and writes the record. |
-| `live-round-trip-<date>.md` | The record of one run. Produced by the script, committed by the owner. |
+| `../.private/evidence/live-round-trip-<date>.md` | Private record of one run. Git-ignored and excluded from packages; never commit or upload it. |
 
 ## Why only the owner can run this
 
@@ -49,7 +49,16 @@ is skipped if a valid token is already stored — pass `--force-login` to
 authorise again), `plan` turns a small brief into a plan document, `apply`
 carries it out, and then the playlist is **read back from Spotify** to confirm
 it holds at least one item. The record lands at
-`evidence/live-round-trip-<date>.md`. Commit it.
+`.private/evidence/live-round-trip-<date>.md`, with owner-only file permissions
+on POSIX systems. **Do not commit or upload it.** It may contain a private
+brief, prompt transcript, account-linked playlist details, and local paths.
+Credential redaction does not make it PII-free.
+
+For public verification, write a separate, manually reviewed summary containing
+only the checks performed, pass/fail outcomes, and counts. Keep personal names,
+account identifiers, playlist links, device details, commands with private paths,
+and raw transcripts out of that summary. A custom `--out` path must also stay
+outside version control and published artifacts.
 
 Useful flags: `--brief "<your own words>"`, `--out <path>`, `--force-login`,
 `--music-deck <path to the binary>`, `--self-test`.
@@ -81,7 +90,8 @@ pass:
    or link found in the document refuses the write. Since 2026-09-06 that is
    this script's own line rather than `boundary.v1` Core 8's: Core 8 now lets an
    artifact the caller asked for carry Spotify content. Held to the stricter
-   rule anyway, because this file gets committed.
+   rule anyway to minimize the content in the private local record. It is not
+   a guarantee that the record is safe to publish.
 
 ## Checking the gates without an account
 
