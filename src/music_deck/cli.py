@@ -1323,6 +1323,17 @@ def _help_request(argv: Sequence[str]) -> str | None:
     wants_terse = "-h" in argv
     if not (wants_complete or wants_terse):
         return None
+    # A help flag after a known verb asks about that verb, not the entire
+    # program. The rendered metadata remains the parser's source of truth, so
+    # this cannot invent a flag that the command does not accept.
+    if argv and not argv[0].startswith("-"):
+        verb = VERBS_BY_NAME.get(argv[0])
+        if verb is not None:
+            if len(argv) > 1 and not argv[1].startswith("-") and verb.subverbs:
+                subverb = next((item for item in verb.subverbs if item.name == argv[1]), None)
+                if subverb is not None:
+                    return "\n".join(_render_verb(subverb, f"{verb.name} "))
+            return "\n".join(_render_verb(verb))
     if wants_complete:
         return complete_help()
     return terse_help()
