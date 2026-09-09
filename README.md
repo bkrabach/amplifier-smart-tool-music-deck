@@ -42,11 +42,11 @@ authorization URL.
 
 | Need | Use | Important boundary |
 |---|---|---|
-| Interpret a brief, search, and create or extend a playlist | `music-deck do` | Model-backed; only its six native tools are available. |
+| Interpret a brief with bounded Spotify music operations | `music-deck do` | Model-backed; it offers the closed catalog, playlist, library, account/listening, and player surface—not general tools. |
 | Review a model-produced playlist plan before a write | `music-deck plan` then `music-deck apply plan.json` | `apply` is deterministic; a plan can be reviewed before Spotify is changed. |
-| Read catalog, playlists, saved library, or playback state | Deterministic CLI commands | Use these for read-only work rather than `do`. |
+| Get a read-only answer from `do` | `music-deck do "…" --read-only` | Blocks every mutation before Spotify is contacted; a successful read exits 0. |
 | List account devices or observe local receivers | `music-deck devices` / `music-deck devices --local` | Local advertisements are observations, not authenticated controllable devices. |
-| Rename, remove, reorder, or control playback | Deterministic CLI/library commands | These controls are not exposed to `do`. |
+| Avoid playback effects during a mixed request | `music-deck do "…" --no-playback` | Blocks player writes while allowing playlist and library work. |
 
 ## Privacy and external-service limits
 
@@ -58,13 +58,13 @@ Playback commands are separate deterministic controls for eligible Spotify Web A
 
 ## Create and extend a playlist
 
-For a bounded six-song creation request, make the target explicit and budget native calls:
+For a bounded creation request, make the target explicit and budget native calls:
 
 ```sh
 music-deck do "Create a playlist named Weekend Guitar with these songs in this order: Smells Like Teen Spirit by Nirvana; Today by The Smashing Pumpkins; Loser by Beck; Cannonball by The Breeders; Connection by Elastica; Song 2 by Blur." --max-turns 14 --max-requests 30
 ```
 
-A later `do` invocation starts a fresh engine session. Name the playlist again (or supply its ID through a deterministic command); do not rely on “that playlist from the previous message.” See [docs/usage.md](docs/usage.md) for follow-ups, Python use, result handling, and safe testing.
+For an inventory without effects, use `--read-only`; `--no-playback` permits playlist or library work but blocks player writes. `--local` is a separate per-invocation opt-in for one bounded, read-only local observation after an authenticated API device read. A later `do` invocation is currently fresh: name the target again rather than relying on “that playlist from the previous message.” See [docs/usage.md](docs/usage.md) for result handling, Python use, and safe testing.
 
 ## Documentation
 

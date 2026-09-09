@@ -205,6 +205,9 @@ def _handle_do(args: argparse.Namespace) -> dict[str, Any]:
         args.brief,
         max_turns=int(getattr(args, "max_turns", DEFAULT_MAX_TURNS)),
         max_requests=int(getattr(args, "max_requests", DEFAULT_MAX_REQUESTS)),
+        read_only=bool(getattr(args, "read_only", False)),
+        no_playback=bool(getattr(args, "no_playback", False)),
+        local=bool(getattr(args, "local", False)),
     )
 
 
@@ -1085,20 +1088,35 @@ VERBS: Final[tuple[Verb, ...]] = (
                 "How many Spotify requests the loop may send.",
                 default=DEFAULT_MAX_REQUESTS,
             ),
+            Arg(
+                "--read-only",
+                "flag",
+                "Block every playlist, library, player, and nested-plan write before Spotify is contacted.",
+            ),
+            Arg(
+                "--no-playback",
+                "flag",
+                "Block every player write while allowing playlist and library work.",
+            ),
+            Arg(
+                "--local",
+                "flag",
+                "Permit at most one read-only local Connect observation after the authenticated API device read; this invocation only.",
+            ),
         ),
         model_backed=True,
         handler=_handle_do,
         detail=(
-            "Model-backed, and the one verb that both reads Spotify and writes to "
-            "it. Unlike `plan`, the model sees what each search actually "
-            "returned and corrects itself -- a query that returns 0 results is "
-            "retried differently rather than written to an empty playlist. Both "
-            "ceilings are reported in the result. It never creates a playlist "
-            "for an empty result set, and never writes a track URI no search in "
-            "the run returned. With no usable model substrate it exits 3 naming "
-            "the missing precondition. A run that ends with nothing written "
-            "refuses `partial_result` carrying `completeness`, and every query "
-            "it tried is listed in `searches`."
+            "Model-backed. It offers only the admitted music-domain tool catalog "
+            "(catalog, playlists, library, account/listening/player reads and "
+            "controls, and in-memory plan application), never engine built-ins "
+            "or administration. The model sees projected tool results and can "
+            "correct a zero-result search. `--read-only` blocks every mutation; "
+            "`--no-playback` blocks only player writes; `--local` permits at "
+            "most one read-only LAN observation after the API read. Both ceilings "
+            "are reported. Writes are acknowledged until a specific readback "
+            "verifies them; a successful read exits 0 without a playlist. With "
+            "no usable model substrate it exits 3 naming the missing precondition."
         ),
     ),
 )
@@ -1130,6 +1148,8 @@ def terse_help() -> str:
         "`plan` and `do` use a model; every other verb runs without one.",
         f"New here? Run `{PROG} setup`: it needs no credentials and no network, "
         "and names the one command to run next.",
+        f"Read without effects: `{PROG} do \"list my saved tracks\" --read-only`.",
+        f"Create or edit while blocking player control: `{PROG} do \"…\" --no-playback`.",
         "",
         f"Run `{PROG} --help` for the complete listing: every argument, its type, and "
         "what each verb returns.",

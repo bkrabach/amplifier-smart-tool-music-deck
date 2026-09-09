@@ -408,9 +408,9 @@ def test_a_track_uri_no_search_returned_is_refused_by_name(monkeypatch, signed_i
 
 
 # =========================================================================== #
-# Every search empty -- partial_result, no playlist, non-zero exit
+# A completed read may succeed with no playlist
 # =========================================================================== #
-def test_every_search_empty_refuses_partial_result_and_creates_no_playlist(
+def test_every_search_empty_is_an_observed_read_and_creates_no_playlist(
     monkeypatch, signed_in
 ):
     spotify = Spotify({DEAD_QUERY: [], "genre:seattle year:1991": []})
@@ -421,14 +421,9 @@ def test_every_search_empty_refuses_partial_result_and_creates_no_playlist(
         call("finish", summary="I could not find anything."),
     )
 
-    with pytest.raises(MusicDeckError) as raised:
-        do(BRIEF, intelligence=model)
+    result = do(BRIEF, intelligence=model)
 
-    failure = raised.value
-    assert failure.code == ErrorCode.PARTIAL_RESULT
-    assert failure.exit_code == EXIT_REFUSAL
-
-    completeness = failure.extra["completeness"]
+    completeness = result["completeness"]
     assert completeness["searches_run"] == 2
     assert completeness["searches_with_results"] == 0
     assert completeness["fetched"] == 0
@@ -441,10 +436,10 @@ def test_every_search_empty_refuses_partial_result_and_creates_no_playlist(
 
     assert ("POST", "/me/playlists") not in sent(transport)
     assert spotify.created == []
-    assert failure.extra["result"]["playlist"] is None
+    assert result["playlist"] is None
 
 
-def test_the_empty_run_refusal_reaches_the_cli_as_exit_two(
+def test_an_empty_search_read_reaches_the_cli_as_success(
     monkeypatch, signed_in, capsys
 ):
     connect(monkeypatch, Spotify({DEAD_QUERY: []}))
@@ -458,9 +453,9 @@ def test_the_empty_run_refusal_reaches_the_cli_as_exit_two(
 
     code, document, _err = run_cli(capsys, "do", BRIEF)
 
-    assert code == EXIT_REFUSAL
-    assert document["error"]["code"] == ErrorCode.PARTIAL_RESULT
-    assert document["error"]["completeness"]["searches_with_results"] == 0
+    assert code == EXIT_SUCCESS
+    assert document["playlist"] is None
+    assert document["completeness"]["searches_with_results"] == 0
 
 
 # =========================================================================== #
@@ -982,6 +977,95 @@ def test_a_bad_argument_from_the_model_is_recycled_as_an_observation(
 
 
 # =========================================================================== #
+# do.v1 Core 2 and effect policy -- closed native authority, before transport
+# =========================================================================== #
+def test_the_native_catalog_has_every_admitted_music_operation_and_only_finish_internal():
+    expected = {
+        "search", "get_track", "get_album", "get_artist", "get_show", "get_episode",
+        "account_profile", "list_playlists", "playlist_items", "playlist_create",
+        "playlist_add", "playlist_remove", "playlist_reorder", "playlist_rename",
+        "library_list", "library_save", "library_remove", "library_contains",
+        "following", "top", "recently_played", "now_playing", "devices", "queue",
+        "play", "pause", "next", "previous", "seek", "volume", "shuffle", "repeat",
+        "transfer", "queue_add", "apply_plan",
+    }
+    declared = {name for name, _description, _schema in do_module.TOOL_DECLARATIONS}
+
+    assert expected <= declared
+    assert "finish" not in declared
+    assert set(do_module.TOOLS) == declared | {"finish"}
+    assert all(schema["additionalProperties"] is False for _, _, schema in do_module.TOOL_DECLARATIONS)
+
+
+@pytest.mark.parametrize("tool", sorted(do_module._MUTATION_TOOLS))
+def test_read_only_blocks_every_mutation_before_a_client_is_resolved(tool):
+    run = do_module._Run(BRIEF, 8, 40, None, read_only=True)
+
+    observation = run._run_tool(tool, {})
+
+    assert observation["error"] == ErrorCode.USAGE
+    assert "before Spotify is contacted" in observation["message"]
+    assert run._api is None
+
+
+@pytest.mark.parametrize("tool", sorted(do_module._PLAYBACK_WRITE_TOOLS))
+def test_no_playback_blocks_every_player_write_before_a_client_is_resolved(tool):
+    run = do_module._Run(BRIEF, 8, 40, None, no_playback=True)
+
+    observation = run._run_tool(tool, {})
+
+    assert observation["error"] == ErrorCode.USAGE
+    assert "before Spotify is contacted" in observation["message"]
+    assert run._api is None
+
+
+def test_local_devices_observation_is_opted_in_once_and_after_the_api_read(monkeypatch):
+    calls = []
+    observer = object()
+
+    def devices(**kwargs):
+        calls.append(kwargs)
+        return {"devices": [], "count": 0, "active": None, "local": {"observed": True}}
+
+    monkeypatch.setattr(do_module.player, "devices", devices)
+    run = do_module._Run(BRIEF, 8, 40, None, local=True, local_observer=observer)
+
+    first = run._run_tool("devices", {})
+    second = run._run_tool("devices", {})
+
+    assert first["local"] == {"observed": True}
+    assert calls == [{"client": run.api, "local": True, "observer": observer}]
+    assert second["error"] == ErrorCode.USAGE
+    assert len(calls) == 1
+
+
+def test_a_completed_profile_read_succeeds_without_a_playlist():
+    class ProfileClient:
+        def __init__(self):
+            self.calls = []
+
+        def request(self, method, path, **kwargs):
+            self.calls.append((method, path, kwargs))
+            return {"id": "listener", "display_name": "Listener", "country": "US"}
+
+    client = ProfileClient()
+    result = do(
+        "Tell me which account is connected.",
+        client=client,
+        intelligence=Scripted(
+            call("account_profile"),
+            call("finish", summary="The projected profile was read."),
+        ),
+    )
+
+    assert result["playlist"] is None
+    assert result["actions"][0]["observation"] == {
+        "account": {"id": "listener", "display_name": "Listener", "country": "US"}
+    }
+    assert [(method, path) for method, path, _kwargs in client.calls] == [("GET", "/me")]
+
+
+# =========================================================================== #
 # The seam to a real engine -- tools are DECLARED, not described
 # =========================================================================== #
 def _engine_with_tools(monkeypatch):
@@ -1176,10 +1260,11 @@ def test_a_partial_result_carries_the_completeness_its_clause_requires(
     monkeypatch, signed_in
 ):
     """``refusals.v1`` Core 5: requested, fetched, kept, added, under-fulfilled."""
-    connect(monkeypatch, Spotify({DEAD_QUERY: []}))
+    connect(monkeypatch, Spotify({LIVE_QUERY: GRUNGE}, holds=[]))
     model = Scripted(
-        call("search", query=DEAD_QUERY, type="track", limit=10),
-        call("finish", summary="nothing"),
+        call("search", query=LIVE_QUERY, type="track", limit=10),
+        call("create_playlist", name="Flannel", tracks=uris(3)),
+        call("finish", summary="Spotify did not return the added tracks."),
     )
 
     with pytest.raises(MusicDeckError) as raised:
@@ -1189,7 +1274,8 @@ def test_a_partial_result_carries_the_completeness_its_clause_requires(
     for field in ("requested", "fetched", "kept", "added", "under_fulfilled"):
         assert field in completeness, completeness
     assert completeness["requested"] == 10
-    assert completeness["under_fulfilled"] == [0]
+    assert completeness["kept"] == completeness["added"] == 3
+    assert completeness["read_back"] == 0
 
 
 # =========================================================================== #
