@@ -52,9 +52,9 @@ authorization URL.
 
 > **Verify playlist visibility before adding sensitive listening data.** Playlist creation requests `public: false`, but acceptance of that request is not proof that later Spotify metadata will report the playlist as non-public. Spotify documents `public` as profile publication, not access control, and its Web API does not manage access control. Check visibility in the Spotify app before adding sensitive content. See https://developer.spotify.com/documentation/web-api/concepts/playlists and https://developer.spotify.com/documentation/web-api/reference/change-playlist-details.
 
-`do` sends real Spotify requests, writes playlists, and incurs provider and Spotify quota. It deliberately allows the model to read Spotify search results so it can correct its searches. This knowingly conflicts with Spotify Developer Policy §III: “Do not ... otherwise ingest Spotify Content into a machine learning or AI model.” Spotify may revoke platform access under §VII. Credentials are excluded from prompts, but Spotify results and raw output may contain personal data. Use synthetic examples in public material and keep live evidence private.
+`do` sends real Spotify and provider requests, and can read account, library, listening, device, queue, and playback state; it can also change playlists and saved library items or issue eligible Spotify API playback controls. `--local` adds only a bounded LAN observation. `do` deliberately allows the model to read projected Spotify results so it can correct its searches. This knowingly conflicts with Spotify Developer Policy §III: “Do not ... otherwise ingest Spotify Content into a machine learning or AI model.” Spotify may revoke platform access under §VII. Credentials are excluded from prompts, but Spotify results and raw output may contain personal data. Use synthetic examples in public material and keep live evidence private.
 
-Playback commands are separate deterministic controls for eligible Spotify Web API devices. An already-playing receiver is not necessarily API-controllable, and no playback action was tested as part of this small pilot.
+`do` and the deterministic playback commands can request controls only for eligible Spotify Web API devices. An already-playing receiver is not necessarily API-controllable; an HTTP acknowledgement is not verified playback.
 
 ## Create and extend a playlist
 
@@ -64,7 +64,7 @@ For a bounded creation request, make the target explicit and budget native calls
 music-deck do "Create a playlist named Weekend Guitar with these songs in this order: Smells Like Teen Spirit by Nirvana; Today by The Smashing Pumpkins; Loser by Beck; Cannonball by The Breeders; Connection by Elastica; Song 2 by Blur." --max-turns 14 --max-requests 30
 ```
 
-For an inventory without effects, use `--read-only`; `--no-playback` permits playlist or library work but blocks player writes. `--local` is a separate per-invocation opt-in for one bounded, read-only local observation after an authenticated API device read. A later `do` invocation is currently fresh: name the target again rather than relying on “that playlist from the previous message.” See [docs/usage.md](docs/usage.md) for result handling, Python use, and safe testing.
+For an inventory without effects, use `--read-only`; `--no-playback` permits playlist or library work but blocks player writes. `--local` is a separate per-invocation opt-in for one bounded, read-only local observation after an authenticated API device read. Each `do` call is currently fresh and ephemeral: named create/resume sessions are not implemented, and there is no implicit “latest” session. Name the target again rather than relying on “that playlist from the previous message.” See [docs/usage.md](docs/usage.md) for result handling, Python use, and safe testing.
 
 ## Documentation
 

@@ -76,9 +76,11 @@ rather than surrendered:
   that would exceed ``--max-turns`` and :class:`_BudgetedClient` refuses the
   request that would exceed ``--max-requests``. Development Mode quota is shared
   and undisclosed; a runaway loop is a real cost somebody else pays.
-* **An empty result set still cannot become a playlist.** ``create_playlist``
-  takes its tracks in the same call, refuses an empty list, and refuses a URI
-  that no search in this run actually returned. Unreachable, not discouraged.
+* **An empty result set cannot become a playlist through the legacy composite
+  tool.** ``create_playlist`` takes its tracks in the same call, refuses an
+  empty list, and refuses a URI that no search in this run actually returned.
+  The separately admitted ``playlist_create`` operation may intentionally
+  create an empty playlist and reports only its acknowledgement.
 * **The transcript is still the literal strings that crossed**, because they are
   still assembled here: the prompt in :func:`assemble_prompt`, and each tool
   result in :meth:`_Run._handle`. Nothing is reconstructed after the fact --
@@ -100,6 +102,8 @@ from __future__ import annotations
 import json
 import re
 from typing import Any, Final, Mapping, Sequence
+
+from jsonschema import Draft202012Validator
 
 from music_deck.errors import (
     FROZEN_CODES,
@@ -479,6 +483,11 @@ TOOLS: Final[tuple[str, ...]] = tuple(
 """Just the names, in order. Derived from the declarations above so a tool
 cannot be named in one place and forgotten in the other."""
 
+_TOOL_VALIDATORS: Final[dict[str, Draft202012Validator]] = {
+    name: Draft202012Validator(schema)
+    for name, _description, schema in (*TOOL_DECLARATIONS, *_INTERNAL_TOOL_DECLARATIONS)
+}
+
 _TRACK_URI_RE: Final = re.compile(r"spotify:track:[0-9A-Za-z]{22}")
 
 _MUTATION_TOOLS: Final[frozenset[str]] = frozenset(
@@ -521,7 +530,9 @@ _PLAYBACK_WRITE_TOOLS: Final[frozenset[str]] = frozenset(
     }
 )
 
-_RECOVERABLE: Final = frozenset({ErrorCode.USAGE, "invalid_input"})
+_RECOVERABLE: Final = frozenset(
+    {ErrorCode.USAGE, ErrorCode.INVALID_INPUT, ErrorCode.INVALID_PLAN}
+)
 """Refusals that are the *model's* mistake and go back to it as an observation.
 
 Everything else -- ``not_authenticated``, ``rate_limited``, ``spotify_error`` --
@@ -555,18 +566,30 @@ class _BudgetedClient:
     """
 
     def __init__(self, client: SpotifyClient, limit: int) -> None:
-        self._client = client
         self.limit = limit
         self.used = 0
+        self._counts_physical_sends = isinstance(client, SpotifyClient)
+        self._client = (
+            client.with_send_guard(self._before_send)
+            if self._counts_physical_sends
+            else client
+        )
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._client, name)
 
     def request(self, method: str, path: str, **kwargs: Any) -> Any:
+        # Alternate clients and test doubles expose one logical request seam.
+        # SpotifyClient calls _before_send for every physical send, including a
+        # retry after 401 or 429.
+        if not self._counts_physical_sends:
+            self._before_send()
+        return self._client.request(method, path, **kwargs)
+
+    def _before_send(self) -> None:
         if self.used >= self.limit:
             raise _CeilingReached("spotify_requests", self.limit)
         self.used += 1
-        return self._client.request(method, path, **kwargs)
 
     def get(self, path: str, **params: Any) -> Any:
         return self.request("GET", path, params=params or None)
@@ -713,6 +736,7 @@ class _Run:
         self.transcript: list[str] = []
         self.tool_results: list[str] = []
         self.history: list[dict[str, Any]] = []
+        self.operations: list[dict[str, str]] = []
         self.searches: list[dict[str, Any]] = []
         self.turns_used = 0
         self.playlist: dict[str, Any] | None = None
@@ -725,6 +749,8 @@ class _Run:
         # ToolStop reaches it as ToolFailed); these two say what actually
         # happened, and `execute` publishes them instead.
         self.finished = False
+        self.uncertain_write = False
+        self.effect_refused = False
         self.fatal: MusicDeckError | None = None
         self.usage: dict[str, Any] = {
             "provider": "",
@@ -784,7 +810,7 @@ class _Run:
         )
 
     # -- one tool call ------------------------------------------------------ #
-    def _handle(self, tool: str, arguments: Mapping[str, Any]) -> str:
+    def _handle(self, tool: str, arguments: Any) -> str:
         """Run one tool call and return the exact string the model will see.
 
         The single place a ceiling can bind, a refusal can be recycled, and a
@@ -813,8 +839,10 @@ class _Run:
                 f"This run's ceiling of {self.max_turns} tool calls is spent."
             )
         self.turns_used += 1
+        recorded_arguments = dict(arguments) if isinstance(arguments, Mapping) else arguments
 
         if tool == "finish":
+            self._validate_arguments(tool, arguments)
             self.summary = _text(arguments.get("summary"))
             self.stopped_by = "finish"
             self.finished = True
@@ -825,6 +853,7 @@ class _Run:
             }
         else:
             try:
+                self._validate_arguments(tool, arguments)
                 observation = self._run_tool(tool, arguments)
             except _CeilingReached as ceiling:
                 self.stopped_by = ceiling.which
@@ -833,6 +862,25 @@ class _Run:
                     "spent."
                 ) from None
             except MusicDeckError as failure:
+                if tool in _MUTATION_TOOLS and (
+                    failure.diagnostic_code == "network_unreachable"
+                    or failure.extra.get("completeness", {}).get("unknown_write") is True
+                ):
+                    self.uncertain_write = True
+                    self.stopped_by = "unknown_write"
+                    observation = {
+                        "error": failure.code,
+                        "message": failure.message,
+                        "effect": "unknown",
+                    }
+                    rendered = json.dumps(observation, indent=2, sort_keys=False)
+                    _assert_nothing_leaked((), [json.dumps(recorded_arguments), rendered])
+                    self._record(tool, recorded_arguments, observation)
+                    self.operations.append({"tool": tool, "state": "unknown"})
+                    self.tool_results.append(rendered)
+                    raise ToolStop(
+                        "The write outcome is unknown, so this run stops rather than retrying it."
+                    ) from None
                 if failure.code not in _RECOVERABLE:
                     self.fatal = failure
                     raise ToolStop(failure.message) from None
@@ -841,10 +889,33 @@ class _Run:
         rendered = json.dumps(observation, indent=2, sort_keys=False)
         # boundary.v1 Core 2 says credentials may not enter tool results or the
         # observable action record. Check both values before retaining either.
-        _assert_nothing_leaked((), [json.dumps(dict(arguments)), rendered])
-        self._record(tool, arguments, observation)
+        _assert_nothing_leaked((), [json.dumps(recorded_arguments), rendered])
+        self._record(tool, recorded_arguments, observation)
+        if tool != "finish":
+            state = (
+                "refused"
+                if isinstance(observation, Mapping) and "error" in observation
+                else "completed"
+            )
+            self.operations.append({"tool": tool, "state": state})
         self.tool_results.append(rendered)
         return rendered
+
+    def _validate_arguments(self, tool: str, arguments: Any) -> None:
+        """Reject invalid native arguments before a library function can send."""
+        error = next(_TOOL_VALIDATORS[tool].iter_errors(arguments), None)
+        if error is None:
+            return
+        location = "".join(
+            f"[{part}]" if isinstance(part, int) else f".{part}"
+            for part in error.absolute_path
+        )
+        raise MusicDeckError(
+            ErrorCode.INVALID_INPUT,
+            f"{tool} received invalid arguments at ${location}: "
+            f"violates JSON Schema {error.validator}.",
+            "Correct the tool arguments and try the operation again; no Spotify request was sent.",
+        )
 
     # -- the run ------------------------------------------------------------ #
     def execute(
@@ -906,14 +977,12 @@ class _Run:
         if cost is not None:
             self.usage["cost_usd"] = str(cost)
 
-    def _record(
-        self, tool: str, arguments: Mapping[str, Any], observation: Any
-    ) -> None:
+    def _record(self, tool: str, arguments: Any, observation: Any) -> None:
         self.history.append(
             {
                 "turn": self.turns_used,
                 "tool": tool,
-                "arguments": dict(arguments),
+                "arguments": arguments,
                 "observation": observation,
             }
         )
@@ -1052,13 +1121,14 @@ class _Run:
                 )
             return self._acknowledged(apply_plan(plan, client=self.api))
         return {
-            "error": "unknown_tool",
+            "error": ErrorCode.INVALID_INPUT,
             "message": f"{tool!r} is not a tool. Call one of: {list(TOOLS)}.",
         }
 
     def _effect_refusal(self, tool: str) -> dict[str, str] | None:
         """Reject restricted effects before any library function can open transport."""
         if self.read_only and tool in _MUTATION_TOOLS:
+            self.effect_refused = True
             return {
                 "error": ErrorCode.USAGE,
                 "message": (
@@ -1067,6 +1137,7 @@ class _Run:
                 ),
             }
         if self.no_playback and tool in _PLAYBACK_WRITE_TOOLS:
+            self.effect_refused = True
             return {
                 "error": ErrorCode.USAGE,
                 "message": "The no-playback policy blocks every playback write before Spotify is contacted.",
@@ -1110,7 +1181,10 @@ class _Run:
         kind = tool.removeprefix("get_")
         reader = getattr(catalog, kind, None)
         if kind not in catalog.SEARCH_KINDS or not callable(reader):
-            return {"error": "unknown_tool", "message": f"{tool!r} is not a lookup tool."}
+            return {
+                "error": ErrorCode.INVALID_INPUT,
+                "message": f"{tool!r} is not a lookup tool.",
+            }
         return {"item": _project_item(reader(_text(arguments.get("id")), client=self.api))}
 
     def _account_profile(self) -> dict[str, Any]:
@@ -1390,7 +1464,7 @@ class _Run:
         """
         if not isinstance(tracks, (list, tuple)) or not tracks:
             return [], {
-                "error": "no_tracks",
+                "error": ErrorCode.INVALID_INPUT,
                 "message": (
                     "A playlist write needs a non-empty `tracks` list, and "
                     "music-deck will not create an empty playlist. Search "
@@ -1417,7 +1491,7 @@ class _Run:
 
         if invented:
             return [], {
-                "error": "unseen_tracks",
+                "error": ErrorCode.INVALID_INPUT,
                 "message": (
                     "These track URIs were never returned by a search in this "
                     f"run, so music-deck will not write them: {invented[:5]}. "
@@ -1426,7 +1500,7 @@ class _Run:
             }
         if not uris:
             return [], {
-                "error": "no_tracks",
+                "error": ErrorCode.INVALID_INPUT,
                 "message": "No usable track URI in `tracks`. Search first.",
             }
         return uris, None
@@ -1469,6 +1543,7 @@ class _Run:
                 }
                 for entry in self.history
             ],
+            "operations": list(self.operations),
             "completeness": completeness,
             "ceilings": ceilings,
             "usage": self.usage,
@@ -1485,9 +1560,11 @@ class _Run:
         # read-only catalog, library, account, and player operations. A write
         # that selected tracks is different: its HTTP acknowledgement is not a
         # verified effect until the playlist-items read above confirms it.
+        if self.uncertain_write or self.effect_refused:
+            raise self._partial(result, completeness, ceilings)
         if self.selected and not read_back:
             raise self._partial(result, completeness, ceilings)
-        if not self.history:
+        if not any(operation["state"] == "completed" for operation in self.operations):
             raise self._partial(result, completeness, ceilings)
         if self.stopped_by in ("turns", "spotify_requests") and not self.selected:
             raise self._partial(result, completeness, ceilings)
@@ -1549,7 +1626,19 @@ class _Run:
         ceilings: Mapping[str, Any],
     ) -> MusicDeckError:
         """The refusal for a run that finished without a playlist to show."""
-        if completeness["searches_run"] and not completeness["searches_with_results"]:
+        if self.uncertain_write:
+            why = "a Spotify write may have reached Spotify but its outcome is unknown"
+            remedy = (
+                "Do not retry this write automatically. Inspect the relevant Spotify "
+                "state, then repeat only work you can confirm was not completed."
+            )
+        elif self.effect_refused:
+            why = "a requested mutation was refused by this call's safety policy"
+            remedy = (
+                "Use a brief that only reads Spotify state, or run a separate call "
+                "with the effect policy the caller explicitly intends."
+            )
+        elif completeness["searches_run"] and not completeness["searches_with_results"]:
             why = (
                 f"every one of the {completeness['searches_run']} search(es) it "
                 "ran returned 0 results, so there was nothing to put in a "

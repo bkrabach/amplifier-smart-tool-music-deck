@@ -30,7 +30,7 @@ music-deck do "List my saved tracks and current queue." --read-only
 music-deck do "Add Debaser by Pixies to Weekend Guitar, but do not control playback." --no-playback
 ```
 
-Every CLI or Python `do` call in this build is fresh and ephemeral. A reference such as “that playlist from the previous message” has no built-in meaning in a later call, so name the playlist or ID again. For an exact ID-targeted read or edit, use deterministic commands.
+Every CLI or Python `do` call in this build is fresh and ephemeral. Named create/resume sessions and session list/delete commands are not implemented; there is no implicit selection of a latest session. A reference such as “that playlist from the previous message” has no built-in meaning in a later call, so name the playlist or ID again. For an exact ID-targeted read or edit, use deterministic commands.
 
 ## Deterministic reads and controls
 
@@ -47,7 +47,7 @@ music-deck devices
 
 `music-deck devices` lists authenticated Spotify Web API devices. `music-deck devices --local` additionally performs a bounded Linux-only mDNS observation of `_spotify-connect._tcp.local.` across eligible physical private-IPv4 multicast interfaces and reads credential-free receiver metadata. Its local observations remain separate from the cloud device list: an advertised receiver is not proven account-bound, API-controllable, or logged in. No local activation or playback is implemented.
 
-Playback verbs exist only as deterministic commands for eligible API devices. They have effects; for example, `music-deck pause` pauses playback. Do not include a playback write in installation or readiness checks, and do not assume anything already playing accepts API control.
+Both `do` and deterministic commands can request playback controls for eligible API devices. They have effects; for example, `music-deck pause` requests that Spotify pause playback. Do not include a playback write in installation or readiness checks, do not assume anything already playing accepts API control, and treat an HTTP acknowledgement as acknowledged rather than independently verified playback.
 
 ## Python use and failure handling
 
@@ -83,7 +83,7 @@ The CLI prints a failure envelope on stdout:
 
 A successful projected read exits 0 without requiring a playlist. `do` records each operation's effect as observed, acknowledged, verified, unknown, or refused as applicable. An HTTP acknowledgement alone is not proof that Spotify made the requested change; inspect a relevant readback before treating an effect as verified. Incomplete or unknown work returns `partial_result` with `result` and `completeness`; do not blindly replay an uncertain write.
 
-A successful `do` result includes the playlist and tracks when playlist readback applies, projected tool results, searches, actions, completeness, ceilings, and transcript. Both ceilings are reported. The defaults are 8 native tool calls and 40 Spotify requests; a larger request may need explicit budgets, but limits do not guarantee completion.
+A successful `do` result includes the playlist and tracks when playlist readback applies, projected tool results, searches, actions, per-operation completed/refused/unknown states, completeness, ceilings, and transcript. Both ceilings are reported. The defaults are 8 native tool calls and 40 actual outbound Spotify requests, including retries and refresh traffic; a larger request may need explicit budgets, but limits do not guarantee completion.
 
 ## Safe testing
 

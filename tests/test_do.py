@@ -374,8 +374,8 @@ def test_create_playlist_with_no_tracks_creates_nothing_and_says_why(
 
     refused = result["actions"][1]
     assert refused["tool"] == "create_playlist"
-    assert refused["observation"]["error"] == "no_tracks"
-    assert "will not create an empty playlist" in refused["observation"]["message"]
+    assert refused["observation"]["error"] == ErrorCode.INVALID_INPUT
+    assert "JSON Schema minItems" in refused["observation"]["message"]
 
     calls = sent(transport)
     assert calls.count(("POST", "/me/playlists")) == 1
@@ -402,7 +402,7 @@ def test_a_track_uri_no_search_returned_is_refused_by_name(monkeypatch, signed_i
     result = do(BRIEF, intelligence=model)
 
     refused = result["actions"][1]["observation"]
-    assert refused["error"] == "unseen_tracks"
+    assert refused["error"] == ErrorCode.INVALID_INPUT
     assert invented in refused["message"]
     assert sent(transport).count(("POST", "/me/playlists")) == 1
 
@@ -716,6 +716,31 @@ def test_the_spotify_request_ceiling_stops_the_loop_and_names_itself(
     assert "spotify_requests ceiling of 1" in failure.message
     # The ceiling is enforced by music-deck, so Spotify saw exactly one request.
     assert len(transport.requests) == 1
+
+
+@pytest.mark.parametrize(
+    ("first_response", "description"),
+    [
+        (
+            json_response(429, {"error": {"status": 429}}, {"Retry-After": "0"}),
+            "bounded 429 retry",
+        ),
+        (json_response(401, {"error": {"status": 401}}), "401 refresh"),
+    ],
+)
+def test_request_ceiling_counts_actual_sends_before_retry_or_refresh(
+    monkeypatch, signed_in, first_response, description
+):
+    """A logical request cannot spend a second transport send beyond its budget."""
+    transport = use_fake_transport(monkeypatch, FakeTransport([first_response]))
+    model = Scripted(call("search", query=LIVE_QUERY, type="track", limit=10))
+
+    with pytest.raises(MusicDeckError) as raised:
+        do(BRIEF, max_requests=1, intelligence=model)
+
+    assert raised.value.code == ErrorCode.PARTIAL_RESULT, description
+    assert raised.value.extra["ceilings"]["spotify_requests"] == {"limit": 1, "used": 1}
+    assert len(transport.requests) == 1, description
 
 
 def test_both_ceilings_are_reported_on_an_ordinary_successful_run(
@@ -1065,6 +1090,196 @@ def test_a_completed_profile_read_succeeds_without_a_playlist():
     assert [(method, path) for method, path, _kwargs in client.calls] == [("GET", "/me")]
 
 
+def test_finish_without_a_domain_operation_is_incomplete():
+    with pytest.raises(MusicDeckError) as raised:
+        do(BRIEF, intelligence=Scripted(call("finish", summary="done")))
+
+    failure = raised.value
+    assert failure.code == ErrorCode.PARTIAL_RESULT
+    assert failure.extra["result"]["actions"][0]["tool"] == "finish"
+    assert failure.extra["result"]["operations"] == []
+
+
+def test_read_only_refused_write_then_finish_is_not_false_success():
+    with pytest.raises(MusicDeckError) as raised:
+        do(
+            BRIEF,
+            read_only=True,
+            intelligence=Scripted(
+                call("playlist_create", name="Flannel", public=False),
+                call("finish", summary="done"),
+            ),
+        )
+
+    failure = raised.value
+    assert failure.code == ErrorCode.PARTIAL_RESULT
+    assert failure.extra["result"]["operations"] == [
+        {"tool": "playlist_create", "state": "refused"}
+    ]
+    assert failure.extra["result"]["actions"][0]["observation"]["error"] == ErrorCode.USAGE
+
+
+def test_refused_write_is_not_hidden_by_a_later_successful_read():
+    class ProfileClient:
+        def request(self, method, path, **_kwargs):
+            assert (method, path) == ("GET", "/me")
+            return {"id": "listener"}
+
+    with pytest.raises(MusicDeckError) as raised:
+        do(
+            BRIEF,
+            client=ProfileClient(),
+            read_only=True,
+            intelligence=Scripted(
+                call("playlist_create", name="Flannel"),
+                call("account_profile"),
+                call("finish", summary="profile read"),
+            ),
+        )
+
+    operations = raised.value.extra["result"]["operations"]
+    assert operations == [
+        {"tool": "playlist_create", "state": "refused"},
+        {"tool": "account_profile", "state": "completed"},
+    ]
+
+
+def test_native_handlers_reject_invalid_schema_arguments_before_effects():
+    """ToolSpec handlers are safe even if an engine skips instance validation."""
+    run = do_module._Run(BRIEF, 12, 12, None)
+    handlers = {tool.name: tool.handler for tool in run.tool_specs()}
+    malformed = [
+        ("playlist_create", {"name": "Flannel", "public": "false"}),
+        ("playlist_create", {"name": "Flannel", "surprise": True}),
+        ("search", None),
+        ("search", "not an object"),
+        ("search", 42),
+        ("search", {"query": LIVE_QUERY, "limit": True}),
+        ("playlist_add", {"playlist_id": PLAYLIST_ID, "tracks": ["spotify:track:x", 1]}),
+        (
+            "apply_plan",
+            {
+                "plan": {
+                    "plan_format": 1,
+                    "brief": "test",
+                    "target": {"kind": "new", "name": "Test"},
+                    "steps": [{"search": "test", "type": "track", "take": 1, "why": "test"}],
+                    "rules": {
+                        "exclude_artists": [1],
+                        "exclude_title_terms": [],
+                        "dedupe": "none",
+                        "order": "as_planned",
+                    },
+                }
+            },
+        ),
+    ]
+
+    for tool, arguments in malformed:
+        observation = json.loads(handlers[tool](arguments))
+        assert observation["error"] == ErrorCode.INVALID_INPUT
+        assert run._api is None
+
+
+def test_native_apply_plan_executes_a_track_plan_and_reports_only_acknowledgement(
+    monkeypatch, signed_in
+):
+    """The native wrapper does not describe a write as independently verified."""
+    transport = connect(monkeypatch, Spotify({LIVE_QUERY: GRUNGE}))
+    plan = {
+        "plan_format": 1,
+        "brief": "one grunge track",
+        "target": {"kind": "new", "name": "Flannel"},
+        "steps": [{"search": LIVE_QUERY, "type": "track", "take": 1, "why": "test"}],
+        "rules": {
+            "exclude_artists": [],
+            "exclude_title_terms": [],
+            "dedupe": "none",
+            "order": "as_planned",
+        },
+    }
+
+    result = do(
+        BRIEF,
+        intelligence=Scripted(call("apply_plan", plan=plan), call("finish", summary="done")),
+    )
+
+    observation = result["actions"][0]["observation"]
+    assert result["operations"] == [{"tool": "apply_plan", "state": "completed"}]
+    assert observation["effect"] == "acknowledged"
+    assert result["read_back"] == {"source": None, "returned": 0, "asked_for": 0}
+    assert sent(transport) == [
+        ("GET", "/search"),
+        ("POST", "/me/playlists"),
+        ("POST", f"/playlists/{PLAYLIST_ID}/items"),
+    ]
+
+
+def test_native_wrong_kind_playlist_reference_refuses_without_a_send(monkeypatch, signed_in):
+    transport = connect(monkeypatch, Spotify({LIVE_QUERY: GRUNGE}))
+    run = do_module._Run(BRIEF, 8, 8, None)
+
+    observation = json.loads(
+        run._handle(
+            "playlist_add",
+            {
+                "playlist_id": "spotify:album:0000000000000000000000",
+                "tracks": [uris(1)[0]],
+            },
+        )
+    )
+
+    assert observation["error"] == ErrorCode.USAGE
+    assert transport.requests == []
+
+
+def test_unknown_write_stops_before_the_model_can_repeat_it(monkeypatch, signed_in):
+    def timeout(_request):
+        raise TimeoutError("synthetic write timeout")
+
+    transport = use_fake_transport(monkeypatch, FakeTransport([timeout]))
+    model = Scripted(
+        call("playlist_create", name="Flannel"),
+        call("playlist_create", name="Flannel"),
+    )
+
+    with pytest.raises(MusicDeckError) as raised:
+        do(BRIEF, intelligence=model)
+
+    failure = raised.value
+    assert failure.code == ErrorCode.PARTIAL_RESULT
+    assert failure.extra["stopped_by"] == "unknown_write"
+    assert failure.extra["result"]["operations"] == [
+        {"tool": "playlist_create", "state": "unknown"}
+    ]
+    assert failure.extra["result"]["actions"][0]["observation"]["effect"] == "unknown"
+    assert len(transport.requests) == 1
+
+
+def test_unknown_later_batch_stops_before_the_model_can_repeat_it(monkeypatch, signed_in):
+    def timeout(_request):
+        raise TimeoutError("synthetic write timeout")
+
+    transport = use_fake_transport(
+        monkeypatch, FakeTransport([json_response(200, {"snapshot_id": "first"}), timeout])
+    )
+    tracks = [f"spotify:track:{index:022d}" for index in range(101)]
+    model = Scripted(
+        call("playlist_add", playlist_id=PLAYLIST_ID, tracks=tracks),
+        call("playlist_add", playlist_id=PLAYLIST_ID, tracks=tracks),
+    )
+
+    with pytest.raises(MusicDeckError) as raised:
+        do(BRIEF, intelligence=model)
+
+    assert raised.value.code == ErrorCode.PARTIAL_RESULT
+    assert raised.value.extra["stopped_by"] == "unknown_write"
+    assert raised.value.extra["result"]["operations"] == [
+        {"tool": "playlist_add", "state": "unknown"}
+    ]
+    assert len(transport.requests) == 2
+
+
 # =========================================================================== #
 # The seam to a real engine -- tools are DECLARED, not described
 # =========================================================================== #
@@ -1168,6 +1383,22 @@ def test_a_tool_handler_calls_the_library_rather_than_a_second_implementation(
     asyncio.run(search.handler({"query": LIVE_QUERY, "type": "track"}, None))
 
     assert seen == [LIVE_QUERY]
+
+
+def test_engine_adapter_leaves_scalar_native_arguments_for_the_schema_handler(
+    monkeypatch, signed_in
+):
+    ledger, _ = _engine_with_tools(monkeypatch)
+    connect(monkeypatch, Spotify({LIVE_QUERY: GRUNGE}))
+
+    with pytest.raises(MusicDeckError):
+        do(BRIEF, intelligence=AmplifierIntelligence())
+
+    [options] = ledger.agent_options
+    playlist_create = next(tool for tool in options.tools if tool.name == "playlist_create")
+    observation = json.loads(asyncio.run(playlist_create.handler("not-an-object", None)))
+
+    assert observation["error"] == ErrorCode.INVALID_INPUT
 
 
 def test_declaring_tools_supplies_an_allow_list_and_not_a_blanket_allow(

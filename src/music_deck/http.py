@@ -154,6 +154,18 @@ class Transport(Protocol):
     def send(self, request: Request, timeout_s: float) -> Response: ...
 
 
+class GuardedTransport:
+    """Delegate transport sends through a caller-owned, pre-send guard."""
+
+    def __init__(self, transport: Transport, before_send: Callable[[], None]) -> None:
+        self._transport = transport
+        self._before_send = before_send
+
+    def send(self, request: Request, timeout_s: float) -> Response:
+        self._before_send()
+        return self._transport.send(request, timeout_s)
+
+
 class UrllibTransport:
     """The authenticated Spotify Web API transport."""
 
@@ -519,6 +531,7 @@ class SpotifyClient:
         transport: Transport | None = None,
         *,
         sleep: Callable[[float], None] | None = None,
+        before_send: Callable[[], None] | None = None,
         base: str = API_BASE,
         timeout_s: float = DEFAULT_TIMEOUT_S,
         max_retry_wait_s: float = DEFAULT_MAX_RETRY_WAIT_S,
@@ -526,9 +539,31 @@ class SpotifyClient:
         self._tokens = token_source
         self._transport = transport if transport is not None else UrllibTransport()
         self._sleep = sleep
+        self._before_send = before_send
         self._base = base.rstrip("/")
         self._timeout_s = timeout_s
         self._max_retry_wait_s = max_retry_wait_s
+
+    def with_send_guard(self, before_send: Callable[[], None]) -> "SpotifyClient":
+        """Return this client with a guard called before every physical API send.
+
+        A logical :meth:`request` can send more than once after a 401 refresh or
+        a bounded 429 retry.  Callers with a hard outbound-request ceiling use
+        this owned seam instead of counting logical calls around ``request``.
+        The transport and token source remain the same objects.
+        """
+        guarded_tokens = getattr(self._tokens, "with_send_guard", lambda _guard: self._tokens)(
+            before_send
+        )
+        return SpotifyClient(
+            guarded_tokens,
+            self._transport,
+            sleep=self._sleep,
+            before_send=before_send,
+            base=self._base,
+            timeout_s=self._timeout_s,
+            max_retry_wait_s=self._max_retry_wait_s,
+        )
 
     # -- the one request path ------------------------------------------------ #
     def request(
@@ -633,7 +668,15 @@ class SpotifyClient:
             encoded = json.dumps(body).encode("utf-8")
             headers["Content-Type"] = "application/json"
         request = Request(method.upper(), url, headers, encoded)
-        return self._transport.send(request, self._timeout_s)
+        if self._before_send is not None:
+            self._before_send()
+        try:
+            return self._transport.send(request, self._timeout_s)
+        except (OSError, TimeoutError) as exc:
+            # A transport failure can happen after the request left this process.
+            # The caller decides whether a write is now uncertain; no raw
+            # transport message reaches a public result.
+            raise internal_error("network_unreachable") from exc
 
     def _url(self, path: str, params: Mapping[str, Any] | None) -> str:
         url = f"{self._base}{path if path.startswith('/') else '/' + path}"

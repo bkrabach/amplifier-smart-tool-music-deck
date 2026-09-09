@@ -904,7 +904,7 @@ VERBS: Final[tuple[Verb, ...]] = (
     Verb(
         "play",
         "Start or resume playback on a device that is already available.",
-        "A JSON object confirming the playback state.",
+        "A JSON object acknowledging Spotify accepted the playback request.",
         args=(
             Arg("--uri", "string", "Spotify URI to play. Omit to resume."),
             Arg("--position-ms", "integer", "Where in the track to start."),
@@ -920,28 +920,28 @@ VERBS: Final[tuple[Verb, ...]] = (
     Verb(
         "pause",
         "Pause playback.",
-        "A JSON object confirming the playback state.",
+        "A JSON object acknowledging Spotify accepted the playback request.",
         args=(_DEVICE,),
         handler=_handle_pause,
     ),
     Verb(
         "next",
         "Skip to the next track.",
-        "A JSON object confirming the playback state.",
+        "A JSON object acknowledging Spotify accepted the playback request.",
         args=(_DEVICE,),
         handler=_handle_next,
     ),
     Verb(
         "previous",
         "Skip to the previous track.",
-        "A JSON object confirming the playback state.",
+        "A JSON object acknowledging Spotify accepted the playback request.",
         args=(_DEVICE,),
         handler=_handle_previous,
     ),
     Verb(
         "seek",
         "Seek within the current track.",
-        "A JSON object confirming the playback state.",
+        "A JSON object acknowledging Spotify accepted the playback request.",
         args=(
             Arg("position_ms", "integer", "Position in milliseconds.", required=True),
             _DEVICE,
@@ -951,7 +951,7 @@ VERBS: Final[tuple[Verb, ...]] = (
     Verb(
         "volume",
         "Set the volume on a device.",
-        "A JSON object confirming the volume.",
+        "A JSON object acknowledging Spotify accepted the volume request.",
         args=(
             Arg("percent", "integer", "Volume from 0 to 100.", required=True),
             _DEVICE,
@@ -962,7 +962,7 @@ VERBS: Final[tuple[Verb, ...]] = (
     Verb(
         "shuffle",
         "Turn shuffle on or off.",
-        "A JSON object confirming the shuffle state.",
+        "A JSON object acknowledging Spotify accepted the shuffle request.",
         args=(
             Arg("state", "string", "on or off.", required=True, choices=("on", "off")),
             _DEVICE,
@@ -972,7 +972,7 @@ VERBS: Final[tuple[Verb, ...]] = (
     Verb(
         "repeat",
         "Set the repeat mode.",
-        "A JSON object confirming the repeat mode.",
+        "A JSON object acknowledging Spotify accepted the repeat request.",
         args=(
             Arg(
                 "state",
@@ -988,7 +988,7 @@ VERBS: Final[tuple[Verb, ...]] = (
     Verb(
         "transfer",
         "Move playback to another device.",
-        "A JSON object confirming which device is now active.",
+        "A JSON object acknowledging Spotify accepted the transfer request.",
         args=(
             Arg("device_id", "string", "The device to move playback to.", required=True),
             Arg("--play", "flag", "Start playing after transferring."),
@@ -1002,7 +1002,7 @@ VERBS: Final[tuple[Verb, ...]] = (
     Verb(
         "queue-add",
         "Add one item to the playback queue.",
-        "A JSON object confirming what was queued.",
+        "A JSON object acknowledging Spotify accepted the queue request.",
         args=(
             Arg("uri", "string", "Spotify track or episode URI.", required=True),
             _DEVICE,
@@ -1079,7 +1079,7 @@ VERBS: Final[tuple[Verb, ...]] = (
             Arg(
                 "--max-turns",
                 "integer",
-                "How many model turns the loop may spend.",
+                "How many native tool calls the loop may spend.",
                 default=DEFAULT_MAX_TURNS,
             ),
             Arg(
@@ -1116,7 +1116,9 @@ VERBS: Final[tuple[Verb, ...]] = (
             "most one read-only LAN observation after the API read. Both ceilings "
             "are reported. Writes are acknowledged until a specific readback "
             "verifies them; a successful read exits 0 without a playlist. With "
-            "no usable model substrate it exits 3 naming the missing precondition."
+            "no usable model substrate it exits 3 naming the missing precondition. "
+            "Each call is fresh and ephemeral: named create/resume sessions are "
+            "not implemented, and music-deck never selects a latest session."
         ),
     ),
 )
@@ -1150,6 +1152,8 @@ def terse_help() -> str:
         "and names the one command to run next.",
         f"Read without effects: `{PROG} do \"list my saved tracks\" --read-only`.",
         f"Create or edit while blocking player control: `{PROG} do \"…\" --no-playback`.",
+        "`do` is fresh and ephemeral: named create/resume sessions are not implemented; no latest session is selected.",
+        "`--local` observes LAN advertisements only; it never activates a receiver or grants playback control.",
         "",
         f"Run `{PROG} --help` for the complete listing: every argument, its type, and "
         "what each verb returns.",

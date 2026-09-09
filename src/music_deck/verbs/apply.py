@@ -52,13 +52,11 @@ are added, and the whole result document rides along on the envelope under
 
 What this module deliberately does NOT do
 -----------------------------------------
-``plan.v1`` Core 3 permits ``"type": "album"`` in a step, and Core 7 says each
-step "searches with its ``type``" -- so an album step searches the album index,
-and this module adds what that search returned. Expanding an album into its
-constituent tracks would be the "whole-album step type" that ``plan.v1``
-explicitly lists under *What v1 deliberately does NOT freeze*, so it is not
-invented here. An album URI handed to ``playlist_add`` is refused by name, which
-is loud and accurate; see DONE.md, where the gap is recorded for the steward.
+``plan.v1`` currently permits an album search step, but its deterministic
+writer accepts track URIs only. Expanding albums is deliberately not invented
+here.  An album step therefore refuses before client resolution: discovering
+that mismatch only after a new target had been created would leave an empty
+playlist behind.
 """
 
 from __future__ import annotations
@@ -136,6 +134,8 @@ def apply_plan(
     # runs for a plan that does not validate, so a refused plan is provably
     # free of side effects.
     validate_plan(plan)
+    _require_executable_steps(plan)
+    _require_valid_existing_target(plan)
 
     rules = plan["rules"]
     api = client if client is not None else _client()
@@ -214,6 +214,37 @@ def apply_plan(
     if under_fulfilled:
         raise _partial(result, step_reports, under_fulfilled)
     return result
+
+
+def _require_executable_steps(plan: dict[str, Any]) -> None:
+    """Refuse a structurally valid plan this version cannot write safely."""
+    for index, step in enumerate(plan["steps"]):
+        if step["type"] == "album":
+            raise MusicDeckError(
+                ErrorCode.INVALID_PLAN,
+                "This build cannot apply an album step without expanding it into "
+                f"tracks at $.steps[{index}].type.",
+                "Use a track search step, or wait for a version that explicitly "
+                "supports album expansion; no playlist was created.",
+                path=f"$.steps[{index}].type",
+            )
+
+
+def _require_valid_existing_target(plan: dict[str, Any]) -> None:
+    """Reject a wrong-kind target before searches can spend a request."""
+    target = plan["target"]
+    if target["kind"] != "existing":
+        return
+    try:
+        catalog.to_id(target["playlist_id"], "playlist")
+    except MusicDeckError as error:
+        raise MusicDeckError(
+            ErrorCode.INVALID_PLAN,
+            "The existing plan target must be a Spotify playlist reference.",
+            "Pass a playlist id, spotify:playlist URI, or matching Spotify URL; "
+            "no Spotify request was sent.",
+            path="$.target.playlist_id",
+        ) from error
 
 
 # --------------------------------------------------------------------------- #
