@@ -1011,7 +1011,7 @@ VERBS: Final[tuple[Verb, ...]] = (
     ),
     Verb(
         "apply",
-        "Carry out a plan against Spotify, deterministically.",
+        "Carry out a track-only plan against Spotify, deterministically.",
         (
             "A JSON object naming the playlist and a per-step `completeness` of "
             "requested/fetched/kept."
@@ -1026,9 +1026,10 @@ VERBS: Final[tuple[Verb, ...]] = (
         ),
         handler=_handle_apply,
         detail=(
-            "No model runs during apply. The plan is validated against plan.v1 "
-            "before a single request is sent, so a bad plan costs nothing and "
-            "refuses `invalid_plan` naming the offending JSON path. An "
+            "No model runs during apply. The plan shape is validated against plan.v1 "
+            "before a single request is sent. This build executes track steps only; "
+            "album steps refuse `invalid_plan` before any Spotify request. Invalid "
+            "plans also refuse `invalid_plan` naming the offending JSON path. An "
             "under-fulfilled step is reported as `partial_result` carrying the "
             "per-step completeness, never as a silent success."
         ),

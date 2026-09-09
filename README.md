@@ -16,7 +16,7 @@ To use model-backed `plan` and `do` with Anthropic, install the complete runtime
 
 ```sh
 uv tool install --force --with anthropic --with "amplifier-agent @ git+https://github.com/microsoft/amplifier-agent@v1#subdirectory=packages/python" git+https://github.com/bkrabach/amplifier-smart-tool-music-deck
-export ANTHROPIC_API_KEY=[REDACTED:SECRET]
+export ANTHROPIC_API_KEY="<your-provider-key>"
 ```
 
 ### Registering your own Spotify app
@@ -43,7 +43,7 @@ authorization URL.
 | Need | Use | Important boundary |
 |---|---|---|
 | Interpret a brief with bounded Spotify music operations | `music-deck do` | Model-backed; it offers the closed catalog, playlist, library, account/listening, and player surface—not general tools. |
-| Review a model-produced playlist plan before a write | `music-deck plan` then `music-deck apply plan.json` | `apply` is deterministic; a plan can be reviewed before Spotify is changed. |
+| Review a model-produced playlist plan before a write | `music-deck plan` then `music-deck apply plan.json` | `apply` is deterministic and currently executes track steps only; review before writing. |
 | Get a read-only answer from `do` | `music-deck do "…" --read-only` | Blocks every mutation before Spotify is contacted; a successful read exits 0. |
 | List account devices or observe local receivers | `music-deck devices` / `music-deck devices --local` | Local advertisements are observations, not authenticated controllable devices. |
 | Avoid playback effects during a mixed request | `music-deck do "…" --no-playback` | Blocks player writes while allowing playlist and library work. |

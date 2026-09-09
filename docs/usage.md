@@ -124,3 +124,7 @@ must review this evaluator before any real-provider run.
 4. Keep tokens, client IDs, account data, device details, playlist IDs, and raw live output out of issues, commits, and public docs.
 
 `plan` followed by `apply` is the review-first alternative: `plan` uses the model to produce a document, then `apply plan.json` executes it deterministically. Review the plan before it changes Spotify.
+
+Only track steps execute in this build. Album-typed plan steps are rejected
+before any Spotify request, including through `do`'s in-memory `apply` tool.
+Album searches remain available; whole-album plan semantics are not yet defined.

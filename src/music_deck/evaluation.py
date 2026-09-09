@@ -32,6 +32,12 @@ EVALUATION_EXIT_BLOCKED = 4
 
 PLAYLIST_ID = "PPPPPPPPPPPPPPPPPPPPPP"
 PLAYLIST_NAME = "Evaluation: Ordered Fixture Set"
+FIXTURE_API_DEVICE = {
+    "id": "synthetic-api-device",
+    "name": "Synthetic API device",
+    "type": "Computer",
+    "is_active": True,
+}
 MAX_TURNS = 12
 MAX_REQUESTS = 24
 SCENARIOS: Final = (
@@ -120,16 +126,7 @@ class FakeSpotify:
         if request.method == "GET" and path == "/me/tracks":
             return {"items": [{"item": FIXTURE_TRACKS[0]}]}
         if request.method == "GET" and path == "/me/player/devices":
-            return {
-                "devices": [
-                    {
-                        "id": "synthetic-api-device",
-                        "name": "Synthetic API device",
-                        "type": "Computer",
-                        "is_active": True,
-                    }
-                ]
-            }
+            return {"devices": [copy.deepcopy(FIXTURE_API_DEVICE)]}
         if request.method == "POST" and path == "/me/playlists":
             if self.fail_first_mutation:
                 self.fail_first_mutation = False
@@ -424,11 +421,27 @@ def _grade(scenario: str, invocation: Invocation) -> tuple[bool, list[str]]:
         reasons.append("evaluator did not remove its isolated configuration and state")
     if scenario == "playlist":
         actual_uris = tuple(track.get("uri") for track in invocation.spotify.playlist_tracks)
+        retained_tracks = result.get("tracks", []) if isinstance(result, Mapping) else []
+        if not retained_tracks and isinstance(result, Mapping):
+            # Canonical tools retain readback in the read action, not the
+            # legacy create-and-fill tool's top-level tracks field.
+            for action in reversed(result.get("actions", [])):
+                if not isinstance(action, Mapping) or action.get("tool") != "playlist_items":
+                    continue
+                observation = action.get("observation")
+                if (
+                    isinstance(observation, Mapping)
+                    and isinstance(observation.get("playlist"), Mapping)
+                    and observation["playlist"].get("id") == PLAYLIST_ID
+                    and observation.get("error") is None
+                ):
+                    retained_tracks = observation.get("items", [])
+                break
         readback_uris = tuple(
             track.get("uri")
-            for track in result.get("tracks", [])
+            for track in retained_tracks
             if isinstance(track, Mapping)
-        ) if isinstance(result, Mapping) else ()
+        )
         created_bodies = [
             request.body for request in requests if request.method == "POST" and request.path == "/me/playlists"
         ]
@@ -515,6 +528,9 @@ def _grade(scenario: str, invocation: Invocation) -> tuple[bool, list[str]]:
         observation = devices_action.get("observation") if isinstance(devices_action, Mapping) else None
         if (
             not isinstance(observation, Mapping)
+            or type(observation.get("count")) is not int
+            or observation.get("count") != 1
+            or observation.get("devices") != [FIXTURE_API_DEVICE]
             or not isinstance(observation.get("local"), Mapping)
             or observation["local"].get("observed") is not True
         ):
@@ -662,7 +678,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Directory for the owner-only scrubbed grade record (default: .private/eval-evidence).",
     )
     args = parser.parse_args(argv)
-    if not args.confirm_real_provider:
+    if args.scenario != "named-session" and not args.confirm_real_provider:
         print(json.dumps({"error": "pass --confirm-real-provider to start a provider call"}))
         return 2
     if args.scenario != "named-session" and (not args.provider or not args.model):

@@ -42,6 +42,10 @@ A Spotify tool for agents and scripts. It offers bounded model-backed music oper
 
 **`plan` then `apply`** separates interpretation from an account write. `plan` turns the brief into a readable document for a person to review. `apply plan.json` carries that document out deterministically and does not make a model call.
 
+Plan execution currently supports track steps only. Album-typed steps refuse
+before any Spotify request, also through `do`'s in-memory `apply`; album catalog
+searches remain supported. Do not treat this limitation as full plan.v1 conformance.
+
 **Deterministic commands** handle exact reads and controls: catalogue search, playlist and saved-library inspection, playlist rename/remove/reorder, account-device listing, and eligible-device playback commands. Use them when you need a read-only answer or an exact ID target.
 
 ## Boundaries and cautions

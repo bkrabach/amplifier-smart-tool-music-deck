@@ -45,7 +45,6 @@ def test_named_session_is_blocked_nonzero_without_provider_or_original_do(capsys
         [
             "--scenario",
             "named-session",
-            "--confirm-real-provider",
             "--output-dir",
             str(tmp_path / "private"),
         ]
@@ -80,6 +79,29 @@ def test_playlist_grade_uses_submitted_body_mutable_state_and_independent_readba
     )
     assert invocation.spotify.readbacks >= 1
     assert outcome["result"]["tracks"][0]["uri"] == evaluation.EXPECTED_URIS[0]
+
+
+def test_playlist_grade_accepts_native_items_readback_and_rejects_corruption():
+    outcome = evaluation._run(
+        "playlist",
+        provider="fixture-provider",
+        model="fixture-model",
+        intelligence=Scripted(
+            call("search", query="fixture artists", type="track", limit=10),
+            call("playlist_create", name=evaluation.PLAYLIST_NAME, public=False),
+            call("playlist_add", playlist_id=evaluation.PLAYLIST_ID,
+                 tracks=list(evaluation.EXPECTED_URIS)),
+            call("playlist_items", playlist_id=evaluation.PLAYLIST_ID),
+            call("finish", summary="Native playlist read back."),
+        ),
+    )
+    assert outcome["status"] == "pass"
+    observation = evaluation._action(outcome["result"], "playlist_items")["observation"]
+    observation["items"].reverse()
+    assert not evaluation._grade("playlist", outcome["invocation"])[0]
+    observation["items"].reverse()
+    observation["playlist"]["id"] = "Q" * 22
+    assert not evaluation._grade("playlist", outcome["invocation"])[0]
 
 
 def test_playlist_grade_rejects_wrong_name_order_duplicate_and_missing_creation():
@@ -166,6 +188,27 @@ def test_readonly_inventory_requires_library_api_devices_one_lan_and_no_write():
     passed, reasons = evaluation._grade("readonly-inventory", invocation)
     assert not passed
     assert any("exactly once" in reason for reason in reasons)
+
+
+def test_readonly_inventory_rejects_discarded_api_device_observation():
+    outcome = evaluation._run(
+        "readonly-inventory",
+        provider="fixture-provider",
+        model="fixture-model",
+        intelligence=Scripted(
+            call("library_list", type="tracks", limit=10),
+            call("devices"),
+            call("finish", summary="Inventory observed."),
+        ),
+    )
+    assert outcome["status"] == "pass"
+    observation = evaluation._action(outcome["result"], "devices")["observation"]
+    retained_devices = observation.pop("devices")
+    assert not evaluation._grade("readonly-inventory", outcome["invocation"])[0]
+    observation["devices"] = []
+    assert not evaluation._grade("readonly-inventory", outcome["invocation"])[0]
+    observation["devices"] = retained_devices
+    assert evaluation._grade("readonly-inventory", outcome["invocation"])[0]
 
 
 def test_readonly_evaluation_never_falls_back_to_the_real_lan_observer(monkeypatch):
