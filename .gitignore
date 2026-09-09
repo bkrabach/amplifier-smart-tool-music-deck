@@ -6,6 +6,9 @@ dist/
 
 # Local diagnostics can contain account data, prompts, and machine identities.
 /.private/
+/.converge/
+/GOAL.md
+/DONE.json
 /scratch/
 /evidence/live-round-trip-*.md
 .env

@@ -339,18 +339,37 @@ def test_a_step_stops_paging_when_spotify_runs_out(
     assert code == EXIT_REFUSAL  # under-fulfilled -- see the partial_result tests
 
 
-def test_a_step_searches_with_its_own_type(signed_in, monkeypatch, capsys, tmp_path):
-    """Core 7: "Each step searches with its ``type``\"."""
+def test_an_album_step_refuses_before_any_read_or_write(signed_in, monkeypatch, capsys, tmp_path):
+    """Album expansion is not built, so it cannot first create a target."""
     plan = plan_document(
         steps=[step("some tracks", 3), step("some albums", 2, kind="album")]
     )
     double = Spotify({"some tracks": catalogue(5), "some albums": catalogue(5, start=50)})
     transport = connect(monkeypatch, double)
 
-    run_apply(capsys, write_plan(tmp_path, plan))
+    code, document, _stderr = run_apply(capsys, write_plan(tmp_path, plan))
 
-    types = [query_of(r.url)["type"] for r in requests_to(transport, "/search")]
-    assert types == ["track", "album"]
+    assert code == EXIT_REFUSAL
+    assert document["error"]["code"] == ErrorCode.INVALID_PLAN
+    assert document["error"]["path"] == "$.steps[1].type"
+    assert transport.requests == []
+
+
+def test_a_wrong_kind_existing_target_refuses_before_any_search_or_write(
+    signed_in, monkeypatch, capsys, tmp_path
+):
+    plan = plan_document(
+        steps=[step("some tracks", 1)],
+        target={"kind": "existing", "playlist_id": "spotify:album:0000000000000000000000"},
+    )
+    transport = connect(monkeypatch, Spotify({"some tracks": catalogue(1)}))
+
+    code, document, _stderr = run_apply(capsys, write_plan(tmp_path, plan))
+
+    assert code == EXIT_REFUSAL
+    assert document["error"]["code"] == ErrorCode.INVALID_PLAN
+    assert document["error"]["path"] == "$.target.playlist_id"
+    assert transport.requests == []
 
 
 # --------------------------------------------------------------------------- #
