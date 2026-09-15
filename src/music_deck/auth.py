@@ -91,7 +91,7 @@ from music_deck.check import (
     token_path,
 )
 from music_deck.errors import ErrorCode, MusicDeckError
-from music_deck.http import Request, Response, Transport, UrllibTransport
+from music_deck.http import GuardedTransport, Request, Response, Transport, UrllibTransport
 
 ACCOUNTS_BASE: Final = "https://accounts.spotify.com"
 AUTHORIZE_URL: Final = f"{ACCOUNTS_BASE}/authorize"
@@ -717,6 +717,21 @@ class FileTokenSource:
                 "Spotify's refresh response carried no access token.",
             )
         return access
+
+    def with_send_guard(self, before_send: Callable[[], None]) -> "FileTokenSource":
+        """Copy this source so a request budget includes token refresh traffic."""
+        transport: Transport = GuardedTransport(
+            self._transport if self._transport is not None else UrllibTransport(),
+            before_send,
+        )
+        guarded = FileTokenSource(
+            transport=transport,
+            path=self._path,
+            now=self._now,
+            client_id=self._client_id,
+        )
+        guarded._token = self._token
+        return guarded
 
 
 def state_files() -> list[Path]:

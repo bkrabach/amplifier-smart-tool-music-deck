@@ -30,7 +30,18 @@ jobs:
           python-version: "3.12"
 
       - name: Build wheel and source distribution
-        run: uv build --out-dir "$RUNNER_TEMP/dist"
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          # Exercise exclusions even on a clean CI checkout.
+          for name in ("GOAL.md", "DONE.json", ".converge/fixture.txt"):
+              path = Path(name)
+              path.parent.mkdir(parents=True, exist_ok=True)
+              with path.open("x", encoding="utf-8") as stream:
+                  stream.write("Synthetic private workflow fixture.\n")
+          PY
+          uv build --out-dir "$RUNNER_TEMP/dist"
 
       - name: Inspect built archives
         run: |
@@ -49,6 +60,10 @@ jobs:
 
           with zipfile.ZipFile(wheels[0]) as archive:
               names = archive.namelist()
+              assert not any(
+                  {".private", ".converge", "GOAL.md", "DONE.json"} & set(Path(name).parts)
+                  for name in names
+              ), names
               assert "music_deck/SMART_TOOL.md" in names
               assert "music_deck/setup_guide.py" in names
               metadata_name = next(
@@ -60,6 +75,10 @@ jobs:
 
           with tarfile.open(sdists[0]) as archive:
               names = archive.getnames()
+              assert not any(
+                  {".private", ".converge", "GOAL.md", "DONE.json"} & set(Path(name).parts)
+                  for name in names
+              ), names
               assert any(name.endswith("/README.md") for name in names)
               assert any(name.endswith("/music_deck/SMART_TOOL.md") for name in names)
               assert any(name.endswith("/music_deck/setup_guide.py") for name in names)

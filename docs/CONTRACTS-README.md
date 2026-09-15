@@ -11,8 +11,10 @@ a colleague reads is the text every AI session obeys.
 | Contract | What it promises | Who builds against it |
 |---|---|---|
 | [`contracts/cli.v1.md`](../contracts/cli.v1.md) | The stable `music-deck` invocation surface: verbs, exit codes, output shape, the frozen refusal vocabulary. | This repo's CLI; any agent or script invoking `music-deck`. |
-| [`contracts/boundary.v1.md`](../contracts/boundary.v1.md) | The one-way boundary between Spotify and a model, PKCE auth, and what never persists. | The owner running music-deck under their own Spotify app; the library's model/HTTP/filesystem layers. |
+| [`contracts/boundary.v1.md`](../contracts/boundary.v1.md) | The Spotify/model boundary, PKCE auth, disconnect, and managed-conversation retention limits. | The owner running music-deck under their own Spotify app; the library's model/HTTP/filesystem layers. |
 | [`contracts/plan.v1.md`](../contracts/plan.v1.md) | The shape of a plan document: required fields, step shape, strict validation, how `apply` executes it. | `music-deck plan` (producer), `music-deck apply` (consumer), anyone who hand-edits a plan. |
+| [`contracts/refusals.v1.md`](../contracts/refusals.v1.md) | The closed public error vocabulary and error-envelope behavior. | The CLI, library error boundary, and callers handling failures. |
+| [`contracts/do.v1.md`](../contracts/do.v1.md) | Bounded model-backed music operations, observed outcomes, explicit continuation, and managed-history limits. | `music-deck do`, its native agent and library adapters, callers continuing work, and reviewers of account effects. |
 
 ## The anatomy every contract follows
 

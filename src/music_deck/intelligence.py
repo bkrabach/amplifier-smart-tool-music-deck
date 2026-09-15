@@ -479,9 +479,13 @@ def _engine_tools(specs: tuple[ToolSpec, ...]) -> list[Any]:
     from amplifier_agent import Tool, ToolFailed
 
     def adapt(spec: ToolSpec) -> Any:
-        async def handler(arguments: dict[str, Any], context: Any) -> str:
+        async def handler(arguments: Any, context: Any) -> str:
             try:
-                return spec.handler(dict(arguments))
+                # Engines may or may not validate call instances themselves.
+                # The library handler owns the final schema check so malformed
+                # scalars become its recoverable public observation instead of
+                # failing while this adapter tries to coerce them into a dict.
+                return spec.handler(arguments)
             except ToolStop as stop:
                 raise ToolFailed(str(stop)) from None
 

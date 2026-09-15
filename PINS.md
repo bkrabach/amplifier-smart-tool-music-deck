@@ -7,7 +7,7 @@ Read this before your first command. Every line is a fact you may rely on.
 | Thing | Exact location |
 |---|---|
 | Vision | `docs/VISION.md` |
-| Contracts | `contracts/cli.v1.md`, `contracts/boundary.v1.md`, `contracts/plan.v1.md`, `contracts/refusals.v1.md` |
+| Contracts | `contracts/cli.v1.md`, `contracts/boundary.v1.md`, `contracts/plan.v1.md`, `contracts/refusals.v1.md`, `contracts/do.v1.md` |
 | Contracts README | `docs/CONTRACTS-README.md` |
 | Standing rules for sessions | `AGENTS.md` |
 | Conformance ledger | `ledger/rows.yaml` — not seeded yet |
@@ -19,7 +19,7 @@ Read this before your first command. Every line is a fact you may rely on.
 - A proposal to change a contract is `<contract>.vN-candidate.md`, in the same
   folder as the contract it changes.
 - A locked contract carries `(FROZEN <date>)` in its first heading line. A
-  draft carries `(DRAFT)`. Status appears nowhere else in the file. All four
+  draft carries `(DRAFT)`. Status appears nowhere else in the file. All five
   contracts are `(DRAFT)` today.
 
 ## The pre-push guard

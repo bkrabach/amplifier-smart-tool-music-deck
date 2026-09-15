@@ -109,7 +109,16 @@ def test_requires_install_paths_exist_in_the_repository():
 
 def test_exactly_one_manifest_under_the_distribution_root():
     """Spec: exactly one manifest per distribution."""
-    skip = {".git", ".venv", "venv", "node_modules", "__pycache__", "dist", "build"}
+    skip = {
+        ".git",
+        ".private",
+        ".venv",
+        "venv",
+        "node_modules",
+        "__pycache__",
+        "dist",
+        "build",
+    }
     found = [
         path
         for path in REPO_ROOT.rglob("SMART_TOOL.md")

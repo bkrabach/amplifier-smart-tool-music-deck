@@ -3,19 +3,20 @@ smart_tool_format: 1
 name: music-deck
 version: 0.1.0
 description: >
-  Carries out a plain-words brief about music against Spotify -- either in one
-  conversational verb that searches, reads what came back, corrects itself and
-  writes, or as a readable plan a person checks before anything runs. Also
-  searches the catalogue and drives whatever device is already playing. Reach
-  for it when an agent needs to build or edit a Spotify playlist, look something
-  up in the catalogue, or control playback without opening the Spotify app.
+  Works with Spotify through a bounded model-backed `do` workflow, a reviewable
+  `plan` then deterministic `apply` workflow, and deterministic catalogue,
+  playlist, library, device, and playback commands. `do` exposes the closed,
+  supported music-domain library surface (not general tools), with `--read-only`,
+  `--no-playback`, and one-observation `--local` effect boundaries. Each invocation
+  is currently fresh and ephemeral; named create/resume sessions are not yet
+  implemented, and no latest session is selected. Use deterministic commands
+  for exact ID-targeted work.
 use_cases:
-  - Carry out a plain-words brief end to end, correcting a search that returns nothing before writing anything
-  - Turn a plain-words brief into a readable playlist plan a person can check before anything runs
-  - Apply an approved plan against Spotify and get back what was found, kept, and skipped
-  - Search the Spotify catalogue and inspect tracks, albums, artists, shows, and episodes
-  - Read and edit playlists and the saved library from a script or an agent
-  - Drive playback on a device that is already playing -- pause, skip, seek, volume, transfer
+  - Carry out one explicit playlist brief, with bounded search, read-back, and playlist writes
+  - Turn a brief into a readable plan that a person can review before deterministic application
+  - Search Spotify, inspect playlists or saved items, and explicitly edit playlists through deterministic commands
+  - List authenticated Spotify API devices and separately observe local Spotify Connect advertisements on Linux
+  - Control playback only on an eligible Spotify API device through deterministic commands
 platforms:
   - linux
   - macos
@@ -31,144 +32,75 @@ requires:
 
 # music-deck
 
-A deck of controls for Spotify, built to be driven by an agent.
+A Spotify tool for agents and scripts. It offers bounded model-backed music operations alongside a reviewable plan/apply path and deterministic Spotify commands.
 
-## When to reach for it
+## Choose the workflow
 
-Reach for music-deck when the job is *music on Spotify* and the caller would
-otherwise be opening the app by hand: building a playlist from a description,
-tidying one that already exists, looking something up in the catalogue, or
-pausing and skipping whatever is currently playing.
+**`do`** interprets one plain-language brief within a bounded native tool loop. It can use the closed supported music-domain library catalog: all supported catalog search kinds and typed reads; projected account profile; playlist and saved-library reads and supported edits; following, top, and recently played; projected playback, devices, and queue; existing Spotify API playback controls; and in-memory structured plan application. It reads projected results before deciding its next step.
 
-There are two shapes of work, and the difference is who reads the middle.
+`do` is not the general CLI or an escape hatch. It cannot use auth, setup, disconnect, raw check, manifest or session administration, recursive `plan`/`do`, shell, files, web, general network, browser, delegation, MCP, or engine built-ins. `--read-only` blocks every mutation; `--no-playback` blocks player writes; `--local` permits at most one read-only local observation after the authenticated API device read. Each invocation is fresh and ephemeral; named create/resume sessions are not implemented and no latest session is selected, so name a target again for a follow-up.
 
-**`do`** is the conversational one. A **brief** -- the caller's own words -- goes
-in, and music-deck runs a bounded loop: propose a search, run it, *read what
-Spotify actually returned*, correct the aim if it was wrong, then write. It
-reports the playlist as **read back from Spotify**, every query it tried, and
-what each returned. Reach for this when the caller wants the thing done.
+**`plan` then `apply`** separates interpretation from an account write. `plan` turns the brief into a readable document for a person to review. `apply plan.json` carries that document out deterministically and does not make a model call.
 
-**`plan`** then **`apply`** is the reviewable one. The brief becomes a **plan**:
-a JSON document naming the searches to run, the rules to apply, and where the
-results land. A person reads the plan. Then `apply` carries it out
-deterministically and reports what was found, kept, and skipped. Reach for this
-when a person wants to check the middle before anything touches their account.
+Plan execution currently supports track steps only. Album-typed steps refuse
+before any Spotify request, also through `do`'s in-memory `apply`; album catalog
+searches remain supported. Do not treat this limitation as full plan.v1 conformance.
 
-The measured difference: asked for three 90s grunge songs, a plan wrote
-`genre:grunge year:1990-1999`, which returns **zero** results -- `genre:grunge`
-alone returns five -- and `apply` created an empty playlist anyway. `do` sees the
-zero and searches again, and cannot create a playlist from an empty result set at
-all.
+**Deterministic commands** handle exact reads and controls: catalogue search, playlist and saved-library inspection, playlist rename/remove/reorder, account-device listing, and eligible-device playback commands. Use them when you need a read-only answer or an exact ID target.
 
-## Sharp edges
+## Boundaries and cautions
 
-- **`plan` and `do` are the model-backed verbs; `--help` says which.** Every
-  other verb runs with no provider configured and no provider SDK installed.
-  Invoked with no usable model substrate, either one refuses (exit 3) naming the
-  missing precondition; neither falls back to a deterministic answer.
-- **`do` is bounded, and says so.** A turn ceiling and a Spotify-request
-  ceiling, both reported in the result. It never creates a playlist for an empty
-  result set, and never writes a track URI no search in the run returned. A run
-  that ends with nothing written refuses `partial_result` carrying
-  `completeness` -- it does not report a success it did not have.
-- **No credential ever reaches a model -- Spotify content may.** The access
-  token, the refresh token and the client ID never enter a prompt, and both
-  model-backed verbs check their own transcript for all three before handing
-  back anything. What
-  Spotify *returns* is a different matter: music-deck lets a model read search
-  results so it can correct its own aim, which knowingly breaches Spotify
-  Developer Policy §III. Every result carries the verbatim prompt transcript, so
-  a reviewer can see exactly what crossed without reading code.
-- **You bring the credentials.** No client ID and no client secret ship with the
-  tool. Auth is PKCE against the caller's own app, and the token is stored under
-  the caller's own state directory, readable only by them.
-- **Development Mode is the ceiling.** A handful of allowlisted users, an owner
-  who holds Premium, and a shared quota. A user who is not on the allowlist can
-  sign in and still get 403 on every request.
-- **Refresh tokens die after six months** and refreshing does not extend them.
-  Re-authorisation is a normal event, not a fault.
-- **music-deck produces no audio.** It is a remote control for a device that is
-  already playing. Every playback write needs Premium and an active device.
-- **`check` never fails.** It reports what it found and exits 0 -- including
-  "no client ID" and "no token". Reporting a problem is its success.
+- `plan` and `do` need a configured model runtime. Other commands do not need a provider; `check` needs neither credentials nor network.
+- `do` uses real provider and Spotify requests, can make supported music effects, and has default ceilings of 8 native tool calls and 40 Spotify requests. `--max-turns` budgets native calls, not future user messages; pagination and readback consume the request budget.
+- A verified read may succeed with exit 0 and no playlist. A write acknowledgement is reported as `acknowledged`, not verified until a relevant read confirms it. Incomplete, refused-effect, or unknown-write work returns the existing `partial_result` envelope with its `completeness` record; unknown writes are never blindly retried.
+- Credentials do not enter prompts, but Spotify results may reach the model and raw output may contain personal data. This knowingly conflicts with Spotify Developer Policy §III's AI-ingestion prohibition. Use synthetic public examples and keep live evidence private.
+- Playlist creation requests `public: false`, but acceptance is not proof that later Spotify metadata will report the playlist as non-public. Spotify describes `public` as profile publication, not access control, and its Web API cannot manage access control. Verify playlist visibility in the Spotify app before adding sensitive content. https://developer.spotify.com/documentation/web-api/concepts/playlists https://developer.spotify.com/documentation/web-api/reference/change-playlist-details
 
-## Worked invocations
+## Devices and playback
 
-Install it:
+`music-deck devices` lists Spotify Web API devices authenticated to the account. Those are distinct from `music-deck devices --local`, which on Linux performs bounded mDNS observation of `_spotify-connect._tcp.local.` over eligible physical private-IPv4 multicast interfaces and reads credential-free receiver metadata.
 
-```
+A locally advertised receiver is not proof that it belongs to the account, is logged in, can be activated, or accepts Spotify API playback control. No local activation or playback occurs. Deterministic playback commands target eligible Spotify API devices; an already-playing receiver can still reject a write.
+
+## Examples
+
+Install the deterministic tool, then configure your own Spotify app with
+`music-deck setup --guide` and `music-deck login`:
+
+```sh
 uv tool install git+https://github.com/bkrabach/amplifier-smart-tool-music-deck
 ```
 
-The deterministic verbs need no provider or model runtime. To use model-backed
-`plan` or `do` with Anthropic, add both runtime packages to the tool environment:
+For model-backed `plan` and `do`, install the provider SDK and engine together
+in the tool environment, then set `ANTHROPIC_API_KEY` in your environment:
 
-```
+```sh
 uv tool install --force --with anthropic --with "amplifier-agent @ git+https://github.com/microsoft/amplifier-agent@v1#subdirectory=packages/python" git+https://github.com/bkrabach/amplifier-smart-tool-music-deck
-export ANTHROPIC_API_KEY=<your key>
 ```
 
-Then get from a fresh install to ready. `setup` writes prose a person reads: the
-gap you actually have, the steps that close it, and the one command to run next.
-`--json` returns the same content structured, and `--guide` prints the whole
-Spotify-app orientation on request. It never prompts:
-
-```
-music-deck setup
-music-deck setup --json
-music-deck setup --guide
-music-deck setup --client-id <your client id>
-music-deck login
-```
-
-Confirm the install and read the current auth facts. Works with no credentials,
-no provider, and no network:
-
-```
+```sh
+# Inspect local readiness; this makes no Spotify or model call.
 music-deck check
-```
 
-Read the tool's own manifest as structured data:
+# Make a bounded, real playlist request.
+music-deck do "Create a playlist named Weekend Guitar with Song 2 by Blur and Debaser by Pixies in that order." \
+  --max-turns 14 --max-requests 30
 
-```
-music-deck manifest
-```
+# Review before a deterministic write.
+music-deck plan "Upbeat guitar songs for a morning" --output plan.json
+music-deck apply plan.json
 
-Authorise against your own Spotify app, once:
-
-```
-MUSIC_DECK_CLIENT_ID=<your client id> music-deck login
-```
-
-Over SSH, run `music-deck login --no-browser` on the tool host. Before opening
-the authorisation URL it prints, run the exact `ssh -L` command `login` prints
-from the browser machine.
-
-Carry out a brief end to end -- searching, correcting, writing, reading back:
-
-```
-music-deck do "three 90s grunge songs in a new playlist called Flannel"
-music-deck do "an hour of ambient for focus" --max-turns 12 --max-requests 60
-```
-
-Or take the reviewable route: turn a brief into a plan, read it, then apply it:
-
-```
-music-deck plan "upbeat 90s guitar songs for a Saturday morning" --output plan.json
-music-deck apply --plan plan.json
-```
-
-Drive whatever is already playing:
-
-```
+# Read exact Spotify state instead of invoking do.
+music-deck playlists --limit 20
+music-deck playlist items "<playlist-id>" --limit 50
 music-deck devices
 music-deck devices --local
-music-deck pause
 ```
 
-`devices --local` is a bounded, Linux-only, UP-multicast physical IPv4,
-read-only observation of local Spotify Connect
-advertisements. Its `local` result stays separate from Spotify's account device
-list and does not establish playback support, control, or login on a receiver.
+See `docs/usage.md` in the repository for follow-ups, Python error handling, and safe testing guidance. This body is free-form guidance; the frontmatter above is the manifest data.
 
-This body is free-form guidance. Nothing depends on a particular sentence in it.
+For an opt-in real-provider evaluation against fake Spotify and LAN state, run
+`python -m music_deck.evaluation --help` from an installed artifact. It never
+uses account or LAN state, but requires an explicit confirmation before it calls
+the configured model provider. Named-session evaluation is reported blocked
+until named create/resume is implemented.

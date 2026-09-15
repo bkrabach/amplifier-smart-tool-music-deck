@@ -859,6 +859,7 @@ def test_the_engine_is_not_a_dependency_of_a_deterministic_install():
     assert base == [
         "httpx>=0.28",
         "ifaddr>=0.2.0",
+        "jsonschema>=4.23",
         "pyyaml>=6.0",
         "zeroconf>=0.151.3",
     ], f"a model-stack dependency crept into base: {base}"
