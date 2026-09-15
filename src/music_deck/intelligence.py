@@ -313,9 +313,10 @@ class ToolSpec:
 class ModelRequest:
     """One fully assembled prompt, and how the caller wants it answered.
 
-    The prompt arrives assembled. Nothing below this line adds a word to it --
-    which is what lets ``boundary.v1`` Core 3's transcript be the whole truth
-    about what was sent.
+    The prompt arrives assembled. The adapter supplies it unchanged as the
+    public ``TurnInput`` content. Product verbs record that application input
+    at their boundary; they do not use this request object to reconstruct
+    engine- or provider-added material.
 
     ``tools``, when non-empty, is what makes the turn agentic: the engine offers
     them to the provider, the provider calls them **natively**, and the handlers
@@ -563,9 +564,10 @@ class AmplifierIntelligence:
     """Runs a prompt through the amplifier-agent engine, embedded in-process.
 
     In-process, not a subprocess: a CLI shelled out to would be a second place
-    prompts are assembled and a second place they could be logged, and
-    ``boundary.v1`` Core 3 promises the transcript music-deck prints is the
-    whole of what was sent.
+    prompts are assembled and a second place they could be logged. Product
+    verbs record the explicit public binding and handler returns they own;
+    this adapter does not claim visibility into engine/provider assembly or
+    wire payloads.
     """
 
     implementation = "amplifier-agent"

@@ -12,8 +12,9 @@ Contracts served
 * ``plan.v1`` Core 2 -- required top-level fields are ``plan_format``,
   ``brief``, ``target``, ``steps`` and ``rules``; ``size`` is optional.
   ``steps`` is an ordered list of at least one step.
-* ``plan.v1`` Core 3 -- a step names music by **search expression only**, never
-  by Spotify ID or URI.
+* ``plan.v1`` Core 3 -- a step names **tracks** by search expression only,
+  never by Spotify ID or URI. Album title filters may narrow that track query;
+  an album-typed step is reserved and refused.
 * ``plan.v1`` Core 4 -- ``rules`` always carries all four of its keys, even
   when empty.
 * ``plan.v1`` Core 5 -- a plan carries no Spotify content other than a
@@ -79,7 +80,7 @@ TARGET_FIELDS: Final[dict[str, tuple[str, ...]]] = {
 }
 
 STEP_FIELDS: Final[tuple[str, ...]] = ("search", "type", "take", "why")
-STEP_TYPES: Final[tuple[str, ...]] = ("track", "album")
+STEP_TYPES: Final[tuple[str, ...]] = ("track",)
 TAKE_MIN: Final = 1
 TAKE_MAX: Final = 50
 
@@ -338,7 +339,8 @@ def _step_problem(step: Any, index: int) -> Problem | None:
     if kind not in STEP_TYPES:
         return (
             f"{where}.type",
-            f"type must be one of {list(STEP_TYPES)}, got {kind!r}",
+            f"type must be {STEP_TYPES[0]!r}; album steps are reserved for future "
+            f"whole-album semantics and are not accepted, got {kind!r}",
         )
 
     take = step["take"]

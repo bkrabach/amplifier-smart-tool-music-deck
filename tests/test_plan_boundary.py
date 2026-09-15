@@ -430,11 +430,12 @@ def test_the_result_carries_every_prompt_sent_verbatim():
     recorder = Recording()
     result = plan(BRIEF, intelligence=recorder)
 
-    assert list(result) == ["plan", "transcript"]
+    assert list(result) == ["plan", "transcript", "transcript_scope"]
     assert result["transcript"] == recorder.prompts
     assert len(result["transcript"]) == 1
     assert BRIEF in result["transcript"][0]
     assert result["transcript"][0] == assemble_prompt(BRIEF)
+    assert result["transcript_scope"] == "application_boundary"
 
 
 def test_the_brief_reaches_the_plan_verbatim():

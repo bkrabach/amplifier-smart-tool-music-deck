@@ -48,6 +48,9 @@ from music_deck.errors import (
     ErrorCode,
     MusicDeckError,
 )
+from music_deck.testing import CANNED_PLAN_JSON, FAKE_CLIENT_ID
+from music_deck.verbs.do import do
+from music_deck.verbs.plan import plan
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_ROOT = REPO_ROOT / "src" / "music_deck"
@@ -127,6 +130,26 @@ class FakeTurnResult:
 
 
 @dataclass
+class FakeTool:
+    """The public engine-tool shape, including its callback."""
+
+    name: str
+    description: str
+    input_schema: dict[str, Any]
+    handler: Any
+
+
+class FakeToolFailed(Exception):
+    pass
+
+
+@dataclass
+class FakeApprovalResponse:
+    decision: str
+    reason: str | None = None
+
+
+@dataclass
 class Ledger:
     """Everything the stand-in was handed, and what the filesystem looked like."""
 
@@ -143,19 +166,36 @@ class Ledger:
     #: there at that instant is the whole input to that decision -- and the only
     #: place a host setting could have reached it.
     host_settings_seen: list[dict[str, str]] = field(default_factory=list)
+    handler_returns: list[str] = field(default_factory=list)
+    adapter_added_inputs: list[str] = field(default_factory=list)
 
 
 class FakeSession:
-    def __init__(self, ledger: Ledger, result: Any, raise_on_run: Exception | None) -> None:
+    def __init__(
+        self,
+        ledger: Ledger,
+        result: Any,
+        raise_on_run: Exception | None,
+        tool_calls: list[tuple[str, dict[str, Any]]],
+        adapter_added_input: str | None,
+    ) -> None:
         self._ledger = ledger
         self._result = result
         self._raise = raise_on_run
+        self._tool_calls = tool_calls
+        self._adapter_added_input = adapter_added_input
 
     async def run(self, turn_input: FakeTurnInput) -> Any:
         self._ledger.turn_inputs.append(turn_input)
         self._ledger.host_settings_seen.append(_host_settings_now())
+        if self._adapter_added_input is not None:
+            self._ledger.adapter_added_inputs.append(self._adapter_added_input)
         if self._raise is not None:
             raise self._raise
+        [options] = self._ledger.agent_options[-1:]
+        for name, arguments in self._tool_calls:
+            tool = next(candidate for candidate in options.tools or () if candidate.name == name)
+            self._ledger.handler_returns.append(await tool.handler(arguments, None))
         return self._result
 
     async def __aenter__(self) -> "FakeSession":
@@ -166,14 +206,29 @@ class FakeSession:
 
 
 class FakeAgent:
-    def __init__(self, ledger: Ledger, result: Any, raise_on_run: Exception | None) -> None:
+    def __init__(
+        self,
+        ledger: Ledger,
+        result: Any,
+        raise_on_run: Exception | None,
+        tool_calls: list[tuple[str, dict[str, Any]]],
+        adapter_added_input: str | None,
+    ) -> None:
         self._ledger = ledger
         self._result = result
         self._raise = raise_on_run
+        self._tool_calls = tool_calls
+        self._adapter_added_input = adapter_added_input
 
     async def create_session(self, options: FakeSessionOptions) -> FakeSession:
         self._ledger.session_options.append(options)
-        return FakeSession(self._ledger, self._result, self._raise)
+        return FakeSession(
+            self._ledger,
+            self._result,
+            self._raise,
+            self._tool_calls,
+            self._adapter_added_input,
+        )
 
     async def __aenter__(self) -> "FakeAgent":
         return self
@@ -247,6 +302,8 @@ def install_fake_engine(
     raise_on_create: Exception | None = None,
     raise_on_run: Exception | None = None,
     refuse_host_settings: bool = False,
+    tool_calls: list[tuple[str, dict[str, Any]]] | None = None,
+    adapter_added_input: str | None = None,
 ) -> Ledger:
     """Put a recording stand-in at ``sys.modules["amplifier_agent"]``.
 
@@ -274,7 +331,13 @@ def install_fake_engine(
         )
         if raise_on_create is not None:
             raise raise_on_create
-        return FakeAgent(ledger, result, raise_on_run)
+        return FakeAgent(
+            ledger,
+            result,
+            raise_on_run,
+            list(tool_calls or ()),
+            adapter_added_input,
+        )
 
     module = type(sys)("amplifier_agent")
     module.AgentError = FakeAgentError  # type: ignore[attr-defined]
@@ -282,6 +345,9 @@ def install_fake_engine(
     module.SessionOptions = FakeSessionOptions  # type: ignore[attr-defined]
     module.TextPart = FakeTextPart  # type: ignore[attr-defined]
     module.TurnInput = FakeTurnInput  # type: ignore[attr-defined]
+    module.Tool = FakeTool  # type: ignore[attr-defined]
+    module.ToolFailed = FakeToolFailed  # type: ignore[attr-defined]
+    module.ApprovalResponse = FakeApprovalResponse  # type: ignore[attr-defined]
     module.create_agent = create_agent  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "amplifier_agent", module)
 
@@ -517,6 +583,93 @@ def test_the_prompt_crosses_the_seam_verbatim(monkeypatch):
     [turn] = ledger.turn_inputs
     assert [part.text for part in turn.content] == [PROMPT]
     assert turn.history is None
+
+
+def test_plan_transcript_is_the_prompt_at_the_public_binding_not_adapter_material(monkeypatch):
+    """The product record is checked against TurnInput, not ModelRequest."""
+    ledger = install_fake_engine(
+        monkeypatch,
+        result=FakeTurnResult(
+            state="success",
+            content=[FakeTextPart(CANNED_PLAN_JSON)],
+            usage=FakeUsage([FakeUsageEntry(provider="anthropic", model="claude-sonnet-5")]),
+        ),
+        adapter_added_input="adapter-added-only",
+    )
+    brief = "  keep this caller brief verbatim  "
+    context = "caller context stays verbatim"
+
+    result = plan(brief, context=context, intelligence=intel.AmplifierIntelligence())
+
+    [turn] = ledger.turn_inputs
+    [bound_prompt] = [part.text for part in turn.content]
+    assert result["transcript"] == [bound_prompt]
+    assert result["transcript_scope"] == "application_boundary"
+    assert brief in bound_prompt
+    assert context in bound_prompt
+    assert ledger.adapter_added_inputs == ["adapter-added-only"]
+    assert "adapter-added-only" not in result["transcript"]
+
+
+def test_do_transcript_records_returned_handler_strings_in_public_delivery_order(monkeypatch):
+    """TurnInput and handler return ledger are independent product-boundary evidence."""
+    ledger = install_fake_engine(
+        monkeypatch,
+        tool_calls=[("account_profile", {})],
+        adapter_added_input="provider-added-only",
+    )
+
+    class ProfileClient:
+        def request(self, method, path, **_kwargs):
+            assert (method, path) == ("GET", "/me")
+            return {"id": "listener", "display_name": "Listener", "country": "US"}
+
+    result = do(
+        "Read the connected account.",
+        client=ProfileClient(),
+        intelligence=intel.AmplifierIntelligence(),
+    )
+
+    [turn] = ledger.turn_inputs
+    [bound_prompt] = [part.text for part in turn.content]
+    assert ledger.handler_returns
+    assert result["transcript"] == [bound_prompt, *ledger.handler_returns]
+    assert result["tool_results"] == ledger.handler_returns
+    assert result["transcript_scope"] == "application_boundary"
+    assert "provider-added-only" not in result["transcript"]
+
+
+def test_credential_ingress_refuses_before_the_public_binding(monkeypatch):
+    """A known synthetic credential cannot reach the observed TurnInput."""
+    ledger = install_fake_engine(monkeypatch)
+    monkeypatch.setenv("MUSIC_DECK_CLIENT_ID", FAKE_CLIENT_ID)
+
+    with pytest.raises(MusicDeckError) as raised:
+        plan(f"a brief carrying {FAKE_CLIENT_ID}", intelligence=intel.AmplifierIntelligence())
+
+    assert raised.value.code == ErrorCode.INTERNAL_ERROR
+    assert ledger.turn_inputs == []
+
+
+def test_credential_in_a_projection_is_rejected_before_callback_delivery(monkeypatch):
+    """The adapter ledger proves a rejected projection was not returned to the engine."""
+    ledger = install_fake_engine(monkeypatch, tool_calls=[("account_profile", {})])
+    monkeypatch.setenv("MUSIC_DECK_CLIENT_ID", FAKE_CLIENT_ID)
+
+    class LeakyProfileClient:
+        def request(self, method, path, **_kwargs):
+            assert (method, path) == ("GET", "/me")
+            return {"id": "listener", "display_name": FAKE_CLIENT_ID}
+
+    with pytest.raises(MusicDeckError) as raised:
+        do(
+            "Read the connected account.",
+            client=LeakyProfileClient(),
+            intelligence=intel.AmplifierIntelligence(),
+        )
+
+    assert raised.value.code == ErrorCode.INTERNAL_ERROR
+    assert ledger.handler_returns == []
 
 
 # --------------------------------------------------------------------------- #

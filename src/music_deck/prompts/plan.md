@@ -33,10 +33,12 @@ The object has these fields, and no others:
   `{"kind": "new", "name": "<playlist name>", "description": "<one line>"}`
   (`description` optional), or `{"kind": "existing", "playlist_id": "<id>"}`.
   Use `kind: "new"` unless the brief names a playlist that already exists.
-- `steps` (required) -- an ordered list of at least one step. Each step is
-  `{"search": "<expression>", "type": "track" | "album", "take": <1..50>,
+- `steps` (required) -- an ordered list of at least one **track** step. Each
+  step is `{"search": "<expression>", "type": "track", "take": <1..50>,
   "why": "<one line, for the person reading the plan>"}` and has no other
-  fields.
+  fields. Do not emit `type: "album"`: whole-album semantics are reserved and
+  not accepted. Use a track query narrowed with `album:"<album title>"` when
+  an album helps identify the tracks.
   - `search` is a Spotify search expression. Field filters help:
     `artist:`, `album:`, `track:`, `year:` (a year or a `1990-1999` range),
     `genre:`.

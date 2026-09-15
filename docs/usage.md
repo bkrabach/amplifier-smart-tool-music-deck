@@ -85,6 +85,13 @@ A successful projected read exits 0 without requiring a playlist. `do` records e
 
 A successful `do` result includes the playlist and tracks when playlist readback applies, projected tool results, searches, actions, per-operation completed/refused/unknown states, completeness, ceilings, and transcript. Both ceilings are reported. The defaults are 8 native tool calls and 40 actual outbound Spotify requests, including retries and refresh traffic; a larger request may need explicit budgets, but limits do not guarantee completion.
 
+`transcript_scope` is always `"application_boundary"`. Its first string is the
+exact rendered prompt music-deck supplied at the public engine binding; for
+`do`, later strings are the checked tool-handler results actually returned
+there, in delivery order. `tool_results` remains for compatibility. The
+transcript does not claim hidden engine prompt assembly, provider
+transformations, or provider wire data.
+
 ## Evaluating a provider run without Spotify or LAN traffic
 
 The installed evaluator calls the production CLI dispatch, then forwards only
@@ -125,6 +132,8 @@ must review this evaluator before any real-provider run.
 
 `plan` followed by `apply` is the review-first alternative: `plan` uses the model to produce a document, then `apply plan.json` executes it deterministically. Review the plan before it changes Spotify.
 
-Only track steps execute in this build. Album-typed plan steps are rejected
-before any Spotify request, including through `do`'s in-memory `apply` tool.
-Album searches remain available; whole-album plan semantics are not yet defined.
+Plans accept only track steps. Album-typed plan steps are rejected before any
+Spotify request, including through `do`'s in-memory `apply` tool. Re-author an
+older album step as a `type: "track"` query and use `album:` to narrow it when
+needed. Album catalogue searches remain available; whole-album plan semantics
+are not yet defined.
