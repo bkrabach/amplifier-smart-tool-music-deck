@@ -96,3 +96,46 @@ full `plan.v1` conformance.
 **Can't check as a complete automated contract ledger:** the clause-by-clause
 ledger and per-contract kits are not yet seeded. The baseline Smart Tools kit
 and the checks above are not a declaration that every draft promise is kept.
+
+## 2026-09-15 — fresh-only main merge
+
+**Scope:** merge `1cb2497e1c2e87c6c0edd55f1ab769d9d18444aa`, whose tree equals
+the reviewed `b2dd611dbede043420cf31692fe04407dab7dc7d` feature head.
+No runtime change is introduced by the accompanying candidate documents.
+
+The manager reran the offline suite from outside the checkout against the
+previously installed wheel. Before pytest, every source Python file was
+byte-compared with its installed counterpart; before and after pytest,
+music-deck imports were required to originate in that wheel environment.
+Fresh HOME/XDG/TMPDIR locations and an explicit credential-free environment
+were used.
+
+```text
+pytest.main(["$REPO/tests", "-m", "not live", "-q", "-ra"])
+MERGED_SOURCE_MATCHES_INSTALLED_WHEEL=PASS
+792 passed, 1 skipped, 3 deselected
+INSTALLED_ORIGINS=PASS
+```
+
+The kit was rerun with the installed wheel's CLI on PATH:
+
+```text
+"$KIT_PYTHON" "$KIT/conformance/run.py" "$REPO" --json-only
+{"pass": 15, "fail": 0, "skip": 0}
+```
+
+The first kit invocation could not import `pydantic` in the base product
+environment and was not a pass. A rerun with the dependency-complete kit
+interpreter passed without changing the global installation; the initial
+failure remains in private evidence.
+
+The exact-merge push CI also passed, independently building and installing
+wheel/sdist artifacts, testing the installed wheel, smoking installed commands,
+and running the pinned kit:
+https://github.com/bkrabach/amplifier-smart-tool-music-deck/actions/runs/34914933863
+
+**Not yet:** named continuation, credential-safe durable admission, and the
+album producer/consumer mismatch remain open. The new plan and transcript
+candidates propose decisions; they do not enact them. The full contract ledger
+and per-contract kits remain unseeded. No paid-model, real Spotify/LAN, playback,
+or global-installation operation was part of this check.
