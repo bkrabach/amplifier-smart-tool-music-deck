@@ -1036,7 +1036,7 @@ VERBS: Final[tuple[Verb, ...]] = (
     ),
     Verb(
         "plan",
-        "Turn a brief in your own words into a readable plan document.",
+        "Turn a brief in your own words into a readable, track-only plan document.",
         (
             "A JSON object: `plan` (a plan.v1 document) and `transcript` (the "
             "exact application prompt supplied to the public engine binding), "
@@ -1065,7 +1065,11 @@ VERBS: Final[tuple[Verb, ...]] = (
             "never falls back to a deterministic answer. It makes no Spotify "
             "request at all and needs no token: every prompt is built from your "
             "own text and music-deck's own static prompt text, and `transcript` "
-            "is there so you can check that yourself."
+            "is there so you can check that yourself. "
+            "Plan steps must use type `track`. Re-author legacy album steps as "
+            "track queries with an `album:` filter; whole-album expansion is "
+            "not supported. The transcript records application-boundary input, "
+            "not hidden engine/provider prompts or wire data."
         ),
     ),
     Verb(

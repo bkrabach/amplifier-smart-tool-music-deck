@@ -188,3 +188,87 @@ recorded action snapshots, accurate help and packaged guidance.
 session creation/resume and the broad pre-persistence guard for native-generated
 content remain blocked on the separate, unratified upstream capability. The
 unseeded full contract ledger and per-contract kits remain *Can't check*.
+
+## 2026-09-15 — verification correction and final installed help gate
+
+**Scope:** integration merge `5d9a4a59e1a319a31a2bc3f88b4714d7d624f6bf`,
+including lane `8b520a136a08fa00fe55989cd81439c505c40890` and manager test
+repair `0b773dd3581928be1ff30985f89b590ea6ae74e5`, plus the manager's
+`cli.py` plan-help correction and two new short/long-help regression cases.
+
+**Correction to the preceding entry:** the integrating manager's 800-pass
+rerun used installed-wheel code; it was not a separately rerun source suite.
+The lane's source attempt retained one path-sensitive assertion failure.
+The preceding entry also prematurely described plan help as track-only:
+the installed command did not say that. Both new help regressions failed on
+that installed build before the help was corrected. This entry supersedes
+those verification and help claims; it does not rewrite the earlier record.
+
+The manager built new wheel and sdist artifacts and installed each into a
+separate Python 3.12 environment. Runtime checks ran outside the checkout
+with explicit credential-free environments and private HOME/XDG/TMPDIR
+locations. Every installed Python and Markdown resource was byte-compared
+with the source, and music-deck import origins were asserted before and after
+pytest in the same process.
+
+```text
+uv build --out-dir "$DIST"
+uv venv --python /usr/bin/python3 "$V"
+uv pip install --python "$V/bin/python" "$ARTIFACT" pytest
+pytest.main(["$REPO/tests", "-m", "not live", "-q", "-ra"])
+
+Wheel:
+INSTALLED_CODE_AND_RESOURCE_BYTES=PASS
+802 passed, 1 skipped, 3 deselected
+INSTALLED_ORIGINS_BEFORE_AND_AFTER=PASS
+
+Sdist:
+INSTALLED_CODE_AND_RESOURCE_BYTES=PASS
+802 passed, 1 skipped, 3 deselected
+INSTALLED_ORIGINS_BEFORE_AND_AFTER=PASS
+```
+
+The expected skip is the empty CLI-shape parameter set; the three deselections
+are explicitly live tests. These counts are installed-package proof, not a new
+real-provider trial.
+
+For each installation the manager ran root, plan, do and apply short/long help,
+`check`, and `manifest`: ten commands, all exit 0. Both plan help forms say
+track-only; full plan help explains `album:` migration and the application-only
+transcript scope. The named-session evaluator remains blocked with exit 4,
+without provider confirmation or a provider call.
+
+The pinned Smart Tools kit ran against the actual extracted source-distribution
+root, with each installed CLI on PATH:
+
+```text
+"$KIT_PYTHON" "$KIT/conformance/run.py" "$DISTRIBUTION_ROOT" --json-only
+Wheel CLI: {"pass": 15, "fail": 0, "skip": 0}
+Sdist CLI: {"pass": 15, "fail": 0, "skip": 0}
+```
+
+Both archives contain LICENSE and exactly one manifest, and exclude private
+evidence, operation directories, briefs and terminal markers. Scans found no
+verifying-machine home path or configured provider-key value. The public
+CHECK-RECORD is intentionally allowed in the sdist; it is not private evidence.
+
+Two corrections to verification itself were retained rather than hidden:
+the initial kit target contained two private installed copies and therefore
+was not the distribution root; the initial manager archive assertion wrongly
+excluded this public check record. Neither required a product runtime change.
+The repaired evaluator test also rejected two deliberately leaking controls:
+a copied document and transcript content copied under a different field.
+
+**Kept within this checked scope:** track-only producer, validator and native
+tool schema; zero-request album-plan refusal; unchanged track-query behavior;
+application-boundary transcripts containing actual supplied prompt text and
+checked handler returns; stable recorded action snapshots; accurate installed
+help and packaged guidance. Public-binding tests exercise AmplifierIntelligence
+with a recording binding substitute, not a provider-wire observer.
+
+**Not yet:** saved conversation creation/resumption and broad pre-persistence
+admission of native-generated content still require the separate upstream
+capability. Whole-album expansion remains deliberately unspecified.
+**Can't check as a complete automated ledger:** per-clause rows and per-contract
+kits remain unseeded. No new paid-model, real Spotify/LAN, account or playback
+operation, global upgrade, or remote publication was part of this verification.

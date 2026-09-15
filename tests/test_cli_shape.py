@@ -393,6 +393,18 @@ def test_a_missing_required_argument_is_a_usage_refusal(scratch):
     assert json.loads(result.stdout)["error"]["code"] == ErrorCode.USAGE
 
 
+@pytest.mark.parametrize("flag", ["-h", "--help"])
+def test_plan_help_names_track_only_admission_and_transcript_scope(flag, scratch):
+    """plan.v1 and boundary.v1: help explains the ratified limits."""
+    result = run("plan", flag, cwd=scratch)
+    assert result.returncode == EXIT_SUCCESS
+    assert "track-only" in result.stdout
+    if flag == "--help":
+        assert "album:" in result.stdout
+        assert "application_boundary" in result.stdout
+        assert "not hidden engine/provider prompts" in result.stdout
+
+
 def test_a_bare_invocation_refuses_rather_than_doing_something(scratch):
     result = run(cwd=scratch)
     assert result.returncode == EXIT_REFUSAL
