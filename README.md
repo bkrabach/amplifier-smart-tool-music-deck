@@ -43,7 +43,7 @@ authorization URL.
 | Need | Use | Important boundary |
 |---|---|---|
 | Interpret a brief with bounded Spotify music operations | `music-deck do` | Model-backed; it offers the closed catalog, playlist, library, account/listening, and player surface—not general tools. |
-| Review a model-produced playlist plan before a write | `music-deck plan` then `music-deck apply plan.json` | `apply` is deterministic and currently executes track steps only; review before writing. |
+| Review a model-produced playlist plan before a write | `music-deck plan` then `music-deck apply plan.json` | Plans and `apply` accept track steps only; use `album:` to narrow a track query. Album catalogue search remains available separately. |
 | Get a read-only answer from `do` | `music-deck do "…" --read-only` | Blocks every mutation before Spotify is contacted; a successful read exits 0. |
 | List account devices or observe local receivers | `music-deck devices` / `music-deck devices --local` | Local advertisements are observations, not authenticated controllable devices. |
 | Avoid playback effects during a mixed request | `music-deck do "…" --no-playback` | Blocks player writes while allowing playlist and library work. |
@@ -56,6 +56,12 @@ authorization URL.
 
 `do` and the deterministic playback commands can request controls only for eligible Spotify Web API devices. An already-playing receiver is not necessarily API-controllable; an HTTP acknowledgement is not verified playback.
 
+Model-backed results include `transcript` and
+`transcript_scope: "application_boundary"`. The first string is the exact
+application prompt supplied to the engine; `do` appends each checked native-tool
+result it returned, in order. This is not a reconstructed provider prompt,
+provider transformation, or wire payload.
+
 ## Create and extend a playlist
 
 For a bounded creation request, make the target explicit and budget native calls:
@@ -65,6 +71,10 @@ music-deck do "Create a playlist named Weekend Guitar with these songs in this o
 ```
 
 For an inventory without effects, use `--read-only`; `--no-playback` permits playlist or library work but blocks player writes. `--local` is a separate per-invocation opt-in for one bounded, read-only local observation after an authenticated API device read. Each `do` call is currently fresh and ephemeral: named create/resume sessions are not implemented, and there is no implicit “latest” session. Name the target again rather than relying on “that playlist from the previous message.” See [docs/usage.md](docs/usage.md) for result handling, Python use, and safe testing.
+
+`plan` never emits `type: "album"` and `apply` refuses it before a Spotify
+request. Re-author an older album step as `type: "track"` with an `album:`
+filter when the album title is useful; this does not expand a whole album.
 
 ## Documentation
 

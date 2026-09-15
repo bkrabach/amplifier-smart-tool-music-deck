@@ -90,6 +90,7 @@ REFUSALS: dict[str, str] = {
     "bad-existing-target-has-a-name.json": "$.target.name",
     "bad-steps-empty.json": "$.steps",
     "bad-step-type.json": "$.steps[0].type",
+    "bad-album-step.json": "$.steps[0].type",
     "bad-order-value.json": "$.rules.order",
     "bad-exclude-artists-not-strings.json": "$.rules.exclude_artists[0]",
     "bad-brief-missing.json": "$.brief",
@@ -345,7 +346,7 @@ def test_the_enumerations_are_exactly_what_the_contract_lists():
     """Guards the vocabulary itself, which the tests above take on trust."""
     assert DEDUPE_VALUES == ("none", "by_track_id", "by_title_and_primary_artist")
     assert ORDER_VALUES == ("as_planned", "shuffle")
-    assert STEP_TYPES == ("track", "album")
+    assert STEP_TYPES == ("track",)
     assert STEP_FIELDS == ("search", "type", "take", "why")
     assert RULES_FIELDS == (
         "exclude_artists",
@@ -458,3 +459,20 @@ def test_the_plan_verb_refuses_a_draft_this_validator_rejects():
 
     assert raised.value.code == ErrorCode.INVALID_PLAN
     assert raised.value.envelope()["error"]["path"] == "$.steps[0].take"
+
+
+def test_the_plan_verb_refuses_an_album_draft_without_coercing_it():
+    """A producer may not turn undefined album semantics into a track plan."""
+    from music_deck.errors import MusicDeckError
+    from music_deck.testing import Recording
+    from music_deck.verbs.plan import plan as run_plan
+
+    draft = load("bad-album-step.json")
+    draft.pop("plan_format")
+    draft.pop("brief")
+
+    with pytest.raises(MusicDeckError) as raised:
+        run_plan("a brief", intelligence=Recording(json.dumps(draft)))
+
+    assert raised.value.code == ErrorCode.INVALID_PLAN
+    assert raised.value.envelope()["error"]["path"] == "$.steps[0].type"

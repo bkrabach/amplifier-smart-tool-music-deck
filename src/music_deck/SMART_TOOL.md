@@ -42,9 +42,10 @@ A Spotify tool for agents and scripts. It offers bounded model-backed music oper
 
 **`plan` then `apply`** separates interpretation from an account write. `plan` turns the brief into a readable document for a person to review. `apply plan.json` carries that document out deterministically and does not make a model call.
 
-Plan execution currently supports track steps only. Album-typed steps refuse
-before any Spotify request, also through `do`'s in-memory `apply`; album catalog
-searches remain supported. Do not treat this limitation as full plan.v1 conformance.
+Plans accept track steps only. Album-typed steps refuse before any Spotify
+request, also through `do`'s in-memory `apply`; re-author one as a track query
+optionally narrowed with `album:`. Album catalogue searches remain supported;
+whole-album plan semantics are not yet defined.
 
 **Deterministic commands** handle exact reads and controls: catalogue search, playlist and saved-library inspection, playlist rename/remove/reorder, account-device listing, and eligible-device playback commands. Use them when you need a read-only answer or an exact ID target.
 
@@ -54,6 +55,11 @@ searches remain supported. Do not treat this limitation as full plan.v1 conforma
 - `do` uses real provider and Spotify requests, can make supported music effects, and has default ceilings of 8 native tool calls and 40 Spotify requests. `--max-turns` budgets native calls, not future user messages; pagination and readback consume the request budget.
 - A verified read may succeed with exit 0 and no playlist. A write acknowledgement is reported as `acknowledged`, not verified until a relevant read confirms it. Incomplete, refused-effect, or unknown-write work returns the existing `partial_result` envelope with its `completeness` record; unknown writes are never blindly retried.
 - Credentials do not enter prompts, but Spotify results may reach the model and raw output may contain personal data. This knowingly conflicts with Spotify Developer Policy §III's AI-ingestion prohibition. Use synthetic public examples and keep live evidence private.
+- Model-backed results label `transcript_scope: "application_boundary"`.
+  `transcript` records the exact application prompt supplied to the public
+  engine binding and, for `do`, checked handler strings actually returned there
+  in order. It does not represent hidden engine/provider prompt material,
+  transformations, or wire data.
 - Playlist creation requests `public: false`, but acceptance is not proof that later Spotify metadata will report the playlist as non-public. Spotify describes `public` as profile publication, not access control, and its Web API cannot manage access control. Verify playlist visibility in the Spotify app before adding sensitive content. https://developer.spotify.com/documentation/web-api/concepts/playlists https://developer.spotify.com/documentation/web-api/reference/change-playlist-details
 
 ## Devices and playback

@@ -567,9 +567,10 @@ def test_the_result_carries_every_string_that_crossed_to_the_model(
 
     result = do(BRIEF, intelligence=model)
 
-    assert result["transcript"] == model.prompts
-    assert len(result["transcript"]) == 1
+    assert result["transcript"] == [*model.prompts, *model.observed]
+    assert len(result["transcript"]) == 4
     assert BRIEF in result["transcript"][0]
+    assert result["transcript_scope"] == "application_boundary"
 
     # Three calls, three results, each the exact string the handler returned.
     assert result["tool_results"] == model.observed
@@ -901,6 +902,42 @@ def test_a_credential_in_a_tool_result_never_reaches_the_engine(monkeypatch):
     assert model.observed == []
 
 
+def test_actions_snapshot_nested_callback_values_before_later_mutation(monkeypatch):
+    """A callback cannot rewrite the arguments or projection already published."""
+    run = do_module._Run(BRIEF, 8, 40, None)
+    arguments = {"query": LIVE_QUERY, "nested": {"value": "before"}}
+    observation = {"result": {"value": "before"}}
+    monkeypatch.setattr(run, "_validate_arguments", lambda *_args: None)
+    monkeypatch.setattr(run, "_run_tool", lambda *_args: observation)
+
+    returned = run._handle("search", arguments)
+    arguments["nested"]["value"] = "after"
+    observation["result"]["value"] = "after"
+
+    recorded = run.history[0]
+    assert json.loads(returned) == {"result": {"value": "before"}}
+    assert recorded["arguments"]["nested"]["value"] == "before"
+    assert recorded["observation"]["result"]["value"] == "before"
+
+
+def test_an_unknown_write_diagnostic_is_not_claimed_as_delivered(monkeypatch, signed_in):
+    """ToolStop prevents callback delivery, even though compatibility keeps it."""
+    def timeout(_request):
+        raise TimeoutError("synthetic write timeout")
+
+    use_fake_transport(monkeypatch, FakeTransport([timeout]))
+    model = Scripted(call("playlist_create", name="Flannel"))
+
+    with pytest.raises(MusicDeckError) as raised:
+        do(BRIEF, intelligence=model)
+
+    result = raised.value.extra["result"]
+    assert len(result["tool_results"]) == 1
+    assert result["transcript"] == model.prompts
+    assert result["tool_results"][0] not in result["transcript"]
+    assert result["transcript_scope"] == "application_boundary"
+
+
 def test_a_tool_music_deck_never_declared_cannot_be_called(monkeypatch, signed_in):
     """The measured failure of 2026-09-06, now caught and named.
 
@@ -1166,6 +1203,30 @@ def test_native_handlers_reject_invalid_schema_arguments_before_effects():
                     "steps": [{"search": "test", "type": "track", "take": 1, "why": "test"}],
                     "rules": {
                         "exclude_artists": [1],
+                        "exclude_title_terms": [],
+                        "dedupe": "none",
+                        "order": "as_planned",
+                    },
+                }
+            },
+        ),
+        (
+            "apply_plan",
+            {
+                "plan": {
+                    "plan_format": 1,
+                    "brief": "album plans are not defined",
+                    "target": {"kind": "new", "name": "Test"},
+                    "steps": [
+                        {
+                            "search": "album:Loveless",
+                            "type": "album",
+                            "take": 1,
+                            "why": "not a track plan",
+                        }
+                    ],
+                    "rules": {
+                        "exclude_artists": [],
                         "exclude_title_terms": [],
                         "dedupe": "none",
                         "order": "as_planned",

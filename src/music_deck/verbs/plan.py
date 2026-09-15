@@ -57,7 +57,7 @@ _SPOTIFY_URL_RE: Final = re.compile(r"open\.spotify\.com/")
 _SPOTIFY_ID_RE: Final = re.compile(r"\b[0-9A-Za-z]{22}\b")
 
 _TARGET_KINDS: Final = ("new", "existing")
-_STEP_TYPES: Final = ("track", "album")
+_STEP_TYPES: Final = ("track",)
 _DEDUPE: Final = ("none", "by_track_id", "by_title_and_primary_artist")
 _ORDER: Final = ("as_planned", "shuffle")
 
@@ -116,7 +116,10 @@ def plan(
     library that reads paths on a caller's behalf is a library that decides what
     a caller may read.
 
-    Returns ``{"plan": <plan.v1 document>, "transcript": [<every prompt sent>]}``.
+    Returns ``{"plan": <plan.v1 document>, "transcript": [<the application
+    prompt supplied at its public engine binding>],
+    "transcript_scope": "application_boundary"}``. It does not claim engine or
+    provider prompt transformations that music-deck cannot observe.
     """
     if not brief or not brief.strip():
         raise MusicDeckError(
@@ -157,7 +160,11 @@ def plan(
 
     document = compose_plan(brief, draft)
     validate_plan_document(document)
-    return {"plan": document, "transcript": transcript}
+    return {
+        "plan": document,
+        "transcript": transcript,
+        "transcript_scope": "application_boundary",
+    }
 
 
 def compose_plan(brief: str, draft: dict[str, Any]) -> dict[str, Any]:
