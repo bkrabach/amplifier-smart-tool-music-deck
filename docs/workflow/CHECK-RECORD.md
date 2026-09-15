@@ -139,3 +139,52 @@ album producer/consumer mismatch remain open. The new plan and transcript
 candidates propose decisions; they do not enact them. The full contract ledger
 and per-contract kits remain unseeded. No paid-model, real Spotify/LAN, playback,
 or global-installation operation was part of this check.
+
+## 2026-09-15 — ratified track plans and application-boundary transcripts
+
+**Scope:** manager integration merge
+`5d9a4a59e1a319a31a2bc3f88b4714d7d624f6bf`, with the narrow record-test
+correction `0b773dd3581928be1ff30985f89b590ea6ae74e5`. The merge implements
+the ratified `plan.v1`, `do.v1`, and `boundary.v1` direction: plan steps are
+track-only and transcripts describe the application boundary without claiming
+engine or provider wire visibility.
+
+The manager reran the complete non-live suite:
+
+```text
+uv run python -m pytest -m 'not live' -q -ra
+800 passed, 1 skipped, 3 deselected
+```
+
+The sole ordinary skip is the existing empty CLI-shape parameterization; the
+three deselections are marked live. A source-independent review also passed:
+the shared validator rejects album steps before `apply` obtains a client, and
+the public-binding double compares actual submitted `TurnInput` and actual
+handler returns with the application-boundary transcript.
+
+The manager built fresh wheel and source-distribution artifacts in isolated
+HOME/XDG/TMPDIR locations and ran tests from outside the checkout:
+
+```text
+WHEEL_SOURCE_BYTE_MATCH=PASS
+800 passed, 1 skipped, 3 deselected
+WHEEL_IMPORT_ORIGINS_BEFORE_AFTER=PASS
+SDIST_IMPORT_FROM_INSTALLED=PASS
+WHEEL_ARCHIVE_PRIVACY_AND_LICENSE=PASS
+SDIST_ARCHIVE_PRIVACY_AND_LICENSE=PASS
+PINNED_SMART_TOOLS_KIT=15 pass, 0 fail, 0 skip
+```
+
+Installed short and long help for `plan`, `do`, and `apply`, plus `check` and
+`manifest`, named track-only plans and
+`transcript_scope: application_boundary`. No provider, Spotify, LAN, account,
+or playback call was made; no global installation was changed.
+
+**Kept in this scope:** track-only producer/schema/native-tool admission,
+zero-request album refusal, application-owned transcript capture, immutable
+recorded action snapshots, accurate help and packaged guidance.
+
+**Not yet:** whole-album expansion remains deliberately undefined. Saved
+session creation/resume and the broad pre-persistence guard for native-generated
+content remain blocked on the separate, unratified upstream capability. The
+unseeded full contract ledger and per-contract kits remain *Can't check*.
