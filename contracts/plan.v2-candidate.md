@@ -137,6 +137,6 @@ may guess or perform album-to-track expansion.
 
 ## Steward response
 
-**UNANSWERED**
-
-Choose one: **ratified** · **ratified with edits** · **declined** · **later**
+**Ratified — 2026-09-15.** The steward answered “ratified” to the two product
+amendments: track-only plan admission and the application-owned transcript.
+This records approval of this candidate, not a freeze or an implementation pass.

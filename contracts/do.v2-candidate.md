@@ -147,5 +147,7 @@ unblock safe continuation.
 
 # Steward decision
 
-Decision: **UNANSWERED** — intent steward selects **ratified**,
-**ratified with edits**, **declined**, or **later**.
+Decision: **Ratified — 2026-09-15.** The steward answered “ratified” to the two
+product amendments. This includes the explicit `boundary.v1` targets above,
+not the separate upstream content-admission candidate. It records direction,
+not a freeze or an implementation pass.
