@@ -23,10 +23,12 @@ its shape so a plan written by one party is never misread by another.
    `{"kind": "existing", "playlist_id"}`. `size` is
    `{"minutes" | "tracks", "tolerance_pct"}`.
    </details>
-3. **A step names music by search expression only, never by Spotify ID or
-   URI.** Its shape is `{"search", "type": "track" | "album", "take": 1..50,
-   "why"}`, where `search` may use field filters such as `artist:`, `album:`,
-   `year:`.
+3. **A step names tracks by search expression only, never by Spotify ID or
+   URI.** Its shape is `{"search", "type": "track", "take": 1..50, "why"}`,
+   where `search` may use field filters such as `artist:`, `album:`, `year:`.
+   An album title may narrow a track query with `album:`; `type: "album"` is
+   reserved for future whole-album semantics and must not be emitted or
+   accepted.
 4. **`rules` always carries all four of its keys, even when empty.**
    `exclude_artists`, `exclude_title_terms`, `dedupe`
    (`none` | `by_track_id` | `by_title_and_primary_artist`), and `order`
@@ -37,10 +39,10 @@ its shape so a plan written by one party is never misread by another.
 6. **Strict validation.** An unknown field at any level, a wrong type, or an
    out-of-range value makes `apply` refuse with `invalid_plan`, naming the
    offending path. Nothing is silently ignored or coerced.
-7. **`apply` executes the plan as written, in step order.** Each step
-   searches with its `type`, paginating at Spotify's 10-per-page cap until
-   `take` results or exhaustion; `rules` apply after fetching; the target is
-   created or extended in batches of at most 100. The result names the
+7. **`apply` executes the plan as written, in step order.** Each track step
+   searches with `type: "track"`, paginating at Spotify's 10-per-page cap
+   until `take` results or exhaustion; `rules` apply after fetching; the target
+   is created or extended in batches of at most 100. The result names the
    playlist and a per-step `completeness` (`requested`/`fetched`/`kept`); an
    under-fulfilled step is a documented `partial_result`, never a silent
    success.
@@ -53,7 +55,10 @@ its shape so a plan written by one party is never misread by another.
   — promoted under the same trigger as `cli.v1`.
 - `size` as a hard constraint rather than advisory — promoted when a real
   caller needs it enforced.
-- A whole-album step type — promoted when a real plan wants one.
+- Whole-album semantics — a future contract change must define their explicit
+  meaning, including how albums become tracks. Until then, no producer or
+  validator guesses an expansion; use a track query, optionally narrowed with
+  `album:`, instead.
 - `exclude_explicit` and `market` fields — promoted when a real plan needs
   them.
 
@@ -62,7 +67,9 @@ its shape so a plan written by one party is never misread by another.
 - Schema fixtures: a good plan is accepted; bad plans (a missing field, a
   wrong type, an unknown field, `plan_format: 2`, a step carrying a Spotify
   ID or URI, `take: 0`) are refused with `invalid_plan` naming the path.
-- `plan`'s own output validates against this contract.
+- `plan`'s own output validates against this contract. The producer admission
+  guard refuses a model-generated step whose `type` is `album`, naming its
+  path; it never silently coerces that step to `track`.
 - `apply` against a mocked Spotify honours step order, 10-per-page
   pagination, `rules`, batches of at most 100, and accurate `completeness`,
   including `partial_result` on under-fulfilment.
@@ -93,3 +100,11 @@ A short brief turned into a plan `apply` can execute as written:
 
 A plan naming `"steps": [{"search": "spotify:track:abc123", ...}]` is bad: a
 step may never carry a Spotify ID, only a search expression (clause 3).
+
+## Changelog
+
+- **2026-09-15 — ratified direction adopted.** The steward ratified
+  `plan.v2-candidate.md`: track-only producer and validator admission matches
+  the consumer boundary. `plan_format: 1` is unchanged. Existing album steps
+  must be re-authored as track queries, optionally using `album:`; no expansion
+  or coercion is implied. This records direction, not a conformance pass or lock.

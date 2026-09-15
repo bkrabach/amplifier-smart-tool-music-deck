@@ -100,6 +100,12 @@ Evaluation grades must verify returned observations and support both canonical
 and compatibility tool sequences; a valid native readback may live in an action
 observation rather than a legacy top-level field.
 
+Track-plan and transcript boundary rule: plans admit only `type: "track"`; use
+`album:` inside a track query rather than inventing whole-album semantics.
+Model-backed results label the application-boundary transcript; retain only the
+exact prompt supplied at the public binding and handler strings actually
+returned there, never reconstructed provider or engine material.
+
 `do.v1` governs bounded native music-domain tools and explicit named
 continuation; current implementation evidence, not this standing rule,
 determines what has landed. `do` never selects implicit history, grants

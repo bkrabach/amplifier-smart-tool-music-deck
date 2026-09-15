@@ -24,14 +24,15 @@ Contracts served
   :func:`_assert_transcript_clean` runs ``check_prompts`` over the whole
   transcript **before anything is handed back**, on the success path and on the
   refusal path both, and fails closed if it reports a violation.
-* ``boundary.v1`` Core 3 -- the transcript is an observable output. Every prompt
-  is assembled in this module and nowhere else. ``transcript`` is what that
-  clause names: every prompt sent, verbatim. Since the model now drives itself
-  through native tool calls, a prompt is not the only thing music-deck sends it,
-  so the result also carries ``tool_results`` -- the exact strings each handler
-  handed back. Together they are the whole of what crossed from music-deck to
-  the model, and :func:`_assert_nothing_leaked` checks **both** for credentials,
-  which is Core 2's "not in text, not in a tool result" read literally.
+* ``boundary.v1`` Core 3 -- the transcript is an observable,
+  application-owned output. Its first string is the exact prompt supplied at
+  music-deck's public engine binding; each later string is an exact handler
+  result actually returned to that binding, in delivery order.
+  ``transcript_scope`` makes that boundary explicit: it does not reconstruct
+  hidden engine prompts, provider transformations, or wire data. The
+  compatibility ``tool_results`` list is retained. :func:`_assert_nothing_leaked`
+  checks both for credentials, which is Core 2's "not in text, not in a tool
+  result" read literally.
 * ``cli.v1`` Core 2 -- ``do`` is model-backed and ``--help`` says so. Nothing
   here imports a provider or the engine at module scope; both arrive through the
   ``Intelligence`` seam, whose imports are already lazy.
@@ -371,7 +372,7 @@ TOOL_DECLARATIONS: Final[tuple[tuple[str, str, dict[str, Any]], ...]] = (
     ),
     (
         "apply_plan",
-        "Apply one structured plan in memory; never pass a filesystem path.",
+        "Apply one track-only structured plan in memory; never pass a filesystem path.",
         _schema(
             {
                 "plan": _schema(
@@ -395,7 +396,7 @@ TOOL_DECLARATIONS: Final[tuple[tuple[str, str, dict[str, Any]], ...]] = (
                             "items": _schema(
                                 {
                                     "search": {"type": "string", "minLength": 1},
-                                    "type": {"type": "string", "enum": ["track", "album"]},
+                                    "type": {"type": "string", "enum": ["track"]},
                                     "take": _LIMIT,
                                     "why": {"type": "string", "minLength": 1},
                                 },
@@ -618,9 +619,11 @@ def assemble_prompt(brief: str, *, max_turns: int, max_requests: int) -> str:
     -- so re-sending a hand-rolled history would be describing the conversation
     to the model *inside* the conversation it is already having.
 
-    That makes this string the whole of what ``boundary.v1`` Core 3's
-    ``transcript`` carries, and :attr:`_Run.tool_results` the rest of what
-    crossed. Both are published, and both are checked for credentials.
+    That makes this string the first item in ``boundary.v1`` Core 3's
+    application-boundary ``transcript``. Exact handler return strings follow it
+    only after they have been checked and delivered. ``tool_results`` preserves
+    the compatibility projection, including diagnostics that stopped before
+    delivery; both records are checked for credentials.
 
     The caller's brief goes in **verbatim**. Nothing here is a credential, which
     is the whole of what Core 2 forbids.
@@ -839,7 +842,7 @@ class _Run:
                 f"This run's ceiling of {self.max_turns} tool calls is spent."
             )
         self.turns_used += 1
-        recorded_arguments = dict(arguments) if isinstance(arguments, Mapping) else arguments
+        recorded_arguments = _snapshot(arguments)
 
         if tool == "finish":
             self._validate_arguments(tool, arguments)
@@ -878,6 +881,9 @@ class _Run:
                     self._record(tool, recorded_arguments, observation)
                     self.operations.append({"tool": tool, "state": "unknown"})
                     self.tool_results.append(rendered)
+                    # ToolStop prevents this handler result from reaching the
+                    # public engine binding. Keep the diagnostic in the
+                    # compatibility record, but never claim it was delivered.
                     raise ToolStop(
                         "The write outcome is unknown, so this run stops rather than retrying it."
                     ) from None
@@ -899,6 +905,10 @@ class _Run:
             )
             self.operations.append({"tool": tool, "state": state})
         self.tool_results.append(rendered)
+        # This exact checked string is the value returned by this handler. It
+        # is appended only after all validation and only on a normal return;
+        # therefore a ToolStop diagnostic cannot masquerade as delivered.
+        self.transcript.append(rendered)
         return rendered
 
     def _validate_arguments(self, tool: str, arguments: Any) -> None:
@@ -982,8 +992,8 @@ class _Run:
             {
                 "turn": self.turns_used,
                 "tool": tool,
-                "arguments": arguments,
-                "observation": observation,
+                "arguments": _snapshot(arguments),
+                "observation": _snapshot(observation),
             }
         )
 
@@ -1548,6 +1558,7 @@ class _Run:
             "ceilings": ceilings,
             "usage": self.usage,
             "transcript": list(self.transcript),
+            "transcript_scope": "application_boundary",
         }
 
         # boundary.v1 Core 2, on every path out, before the caller sees a word
@@ -1762,6 +1773,23 @@ def _assert_nothing_leaked(
             "with the message above; no access token, refresh token or client "
             "ID should ever be able to reach a model.",
         )
+
+
+# --------------------------------------------------------------------------- #
+# Published action snapshots
+# --------------------------------------------------------------------------- #
+def _snapshot(value: Any) -> Any:
+    """Copy JSON-shaped callback input before retaining public evidence.
+
+    Native adapters may reuse or mutate nested argument and observation objects
+    after a handler returns. Serializing the checked representation and loading
+    it again is deliberately smaller than another record type and ensures the
+    published action cannot be rewritten by that later mutation.
+    """
+    try:
+        return json.loads(json.dumps(value))
+    except (TypeError, ValueError):
+        return value
 
 
 # --------------------------------------------------------------------------- #

@@ -29,9 +29,14 @@ what crosses into a prompt checkable, and holds what is still promised.
 2. **No credential ever enters a prompt.** Not the access token, the refresh
    token, or the client ID — not in text, not in a tool result, not in a
    retry. A model that can read Spotify still never reads the keys to it.
-3. **The prompt transcript is an observable output.** The result document
-   carries `transcript` — every prompt sent, verbatim — so a reviewer sees what
-   crossed without reading code. Clause 1 makes this load-bearing.
+3. **The application-owned transcript is an observable output.** The result
+   document carries `transcript`: exactly the caller brief, caller context,
+   application instructions, and music-tool projections music-deck supplied to
+   the public engine binding, with selected prior application history explicitly
+   labelled. It lets a reviewer see what music-deck supplied without reading
+   code; it neither attests nor reconstructs engine-assembled prompt material,
+   adapter/provider transformations, or a provider wire payload. Clause 1 makes
+   this bounded output load-bearing.
 4. **Auth is PKCE only, with the caller's own client ID.** The redirect URI is
    a loopback IP literal on a **fixed, registered port** — `http://127.0.0.1:8888`
    by default, never `localhost` — and `login` binds exactly the port the caller
@@ -101,8 +106,12 @@ what crosses into a prompt checkable, and holds what is still promised.
   any of them fails before model delivery or storage persistence. Model and
   storage spies prove neither received it. The clause-2 half of the old boundary
   check is kept and extended to the managed-history exception.
-- Every prompt and projected tool result the substrate captured appears verbatim
-  in the observable output: what crossed is what the caller can read back.
+- A recording public-binding substitute captures the caller brief, caller
+  context, application instructions, and music-tool projections supplied by
+  music-deck; each captured application input appears verbatim in the observable
+  output. Selected prior application history is present only when explicitly
+  labelled. A test adapter that adds or transforms internal/provider input must
+  not cause the transcript to manufacture or claim that material.
 - A fresh `do` invocation leaves no retained conversation data on disk. An
   explicit create or resume uses a private caller-owned store; create refuses an
   existing name and resume refuses a missing, busy, incompatible, or differently
@@ -127,6 +136,11 @@ what crosses into a prompt checkable, and holds what is still promised.
 
 ## Changelog
 
+- **2026-09-15 — ratified direction adopted.** The steward ratified
+  `do.v2-candidate.md`, including the Core 3 and conformance changes here.
+  Transcript observability is application-owned; credential protection and
+  the managed-history admission requirements are unchanged. This records
+  direction, not a lock or a conformance pass.
 - **2026-09-09 — ratified direction adopted.** The steward ratified the v2
   candidate alongside `do.v1` and the Vision amendment. Core 1 now names the
   bounded `do` music-domain projections; Core 6 adds managed-history cleanup;

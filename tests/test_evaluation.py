@@ -350,7 +350,7 @@ def test_fake_boundary_does_not_retain_an_oversized_playlist_request():
     assert spotify.requests[0].body is None
 
 
-def test_record_is_owner_only_and_excludes_raw_cli_transcript(tmp_path):
+def test_record_is_owner_only_and_excludes_raw_cli_transcript(tmp_path, monkeypatch):
     outcome = evaluation._run(
         "playlist",
         provider="fixture-provider",
@@ -358,6 +358,9 @@ def test_record_is_owner_only_and_excludes_raw_cli_transcript(tmp_path):
         intelligence=playlist_model(),
     )
     outcome["document"]["transcript"] = ["not-for-the-record"]
+    # Provenance may contain this word; it is not transcript content.
+    module_path = tmp_path / "transcript" / "music_deck" / "evaluation.py"
+    monkeypatch.setattr(evaluation, "__file__", str(module_path))
     record = evaluation._write_record(outcome, tmp_path / "evidence")
     next_record = evaluation._write_record(outcome, tmp_path / "evidence")
     stored = json.loads(record.read_text())
@@ -368,11 +371,13 @@ def test_record_is_owner_only_and_excludes_raw_cli_transcript(tmp_path):
     assert stat.S_IMODE(record.stat().st_mode) == 0o600
     assert stat.S_IMODE(next_record.stat().st_mode) == 0o600
     assert stat.S_IMODE(record.parent.stat().st_mode) == 0o700
-    assert "transcript" not in record.read_text()
+    assert "transcript" not in stored
+    assert "document" not in stored
+    assert "not-for-the-record" not in record.read_text()
     assert stored["status"] == "pass"
     assert stored["invoked_cli_argv"][0] == "do"
     assert stored["invoked_evaluator_argv"] == []
-    assert stored["installed_module_path"].endswith("music_deck/evaluation.py")
+    assert stored["installed_module_path"] == str(module_path)
 
 
 def test_evaluator_scoped_replaces_cli_run_do_then_restores_it(monkeypatch):

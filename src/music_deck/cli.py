@@ -1036,10 +1036,11 @@ VERBS: Final[tuple[Verb, ...]] = (
     ),
     Verb(
         "plan",
-        "Turn a brief in your own words into a readable plan document.",
+        "Turn a brief in your own words into a readable, track-only plan document.",
         (
             "A JSON object: `plan` (a plan.v1 document) and `transcript` (the "
-            "verbatim text of every prompt sent to the model)."
+            "exact application prompt supplied to the public engine binding), "
+            "plus `transcript_scope: application_boundary`."
         ),
         args=(
             Arg("brief", "string", "What you want, in your own words.", required=True),
@@ -1064,7 +1065,11 @@ VERBS: Final[tuple[Verb, ...]] = (
             "never falls back to a deterministic answer. It makes no Spotify "
             "request at all and needs no token: every prompt is built from your "
             "own text and music-deck's own static prompt text, and `transcript` "
-            "is there so you can check that yourself."
+            "is there so you can check that yourself. "
+            "Plan steps must use type `track`. Re-author legacy album steps as "
+            "track queries with an `album:` filter; whole-album expansion is "
+            "not supported. The transcript records application-boundary input, "
+            "not hidden engine/provider prompts or wire data."
         ),
     ),
     Verb(
@@ -1073,7 +1078,8 @@ VERBS: Final[tuple[Verb, ...]] = (
         (
             "A JSON object: `playlist`, `tracks` (read back from Spotify after "
             "the write), `searches`, `actions`, `completeness`, `ceilings`, and "
-            "`transcript` (the verbatim text of every prompt sent)."
+            "`transcript` (the public prompt followed by checked handler strings "
+            "actually returned), labelled `transcript_scope: application_boundary`."
         ),
         args=(
             Arg("brief", "string", "What you want, in your own words.", required=True),
@@ -1119,7 +1125,9 @@ VERBS: Final[tuple[Verb, ...]] = (
             "verifies them; a successful read exits 0 without a playlist. With "
             "no usable model substrate it exits 3 naming the missing precondition. "
             "Each call is fresh and ephemeral: named create/resume sessions are "
-            "not implemented, and music-deck never selects a latest session."
+            "not implemented, and music-deck never selects a latest session. "
+            "Its transcript is application-boundary evidence, not a claim about "
+            "hidden engine/provider prompts or wire data."
         ),
     ),
 )
@@ -1155,6 +1163,8 @@ def terse_help() -> str:
         f"Create or edit while blocking player control: `{PROG} do \"…\" --no-playback`.",
         "`do` is fresh and ephemeral: named create/resume sessions are not implemented; no latest session is selected.",
         "`--local` observes LAN advertisements only; it never activates a receiver or grants playback control.",
+        "`plan`/`apply` accept track steps only; use album catalog search separately or `album:` in a track query.",
+        "`transcript_scope: application_boundary` labels application inputs and returned tool results, not provider wire data.",
         "",
         f"Run `{PROG} --help` for the complete listing: every argument, its type, and "
         "what each verb returns.",

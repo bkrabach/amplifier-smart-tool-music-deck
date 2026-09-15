@@ -46,8 +46,13 @@ does not claim that the implementation or conformance kit is complete.
    governing boundary permits; credentials, provider keys, and raw tokens are
    never in prompts, replay, native history, or output. Credential-bearing
    material is rejected before model delivery or history/checkpoint persistence;
-   checking or redacting it afterward is insufficient. Every prompt actually
-   sent or replayed in the current turn is observable in its transcript.
+   checking or redacting it afterward is insufficient. The observable,
+   application-owned transcript records exactly the caller brief, caller
+   context, application instructions, and music-tool projections music-deck
+   supplied to the public engine binding. It may include selected prior
+   application history only when that history is explicitly labelled. It does
+   not claim to reconstruct a complete engine-assembled prompt or provider
+   wire payload.
 5. **Outcomes record what happened, not what was intended.** A verified read
    may succeed with exit 0; success does not require a playlist. Each operation
    reports an observed, acknowledged, verified, unknown, or refused state as
@@ -103,9 +108,12 @@ does not claim that the implementation or conformance kit is complete.
 - Mocked player control distinguishes acknowledged from verified effect;
   `--no-playback`, saved-policy omission, apply nesting, pagination/read-back,
   and per-turn budgets are enforced.
-- Offline fixtures cover crash uncertainty, full current-turn transcript, no
-  historical mutation replay, `0700` directory and `0600` file/sidecar modes,
-  lease-safe purge, and one-call `--local` observation. Model and storage spies
+- Offline fixtures cover crash uncertainty; an application-owned transcript
+  that exactly records the caller brief, caller context, application
+  instructions, and music-tool projections supplied to the public engine
+  binding; explicitly labelled selected prior application history; no
+  historical mutation replay; `0700` directory and `0600` file/sidecar modes;
+  lease-safe purge; and one-call `--local` observation. Model and storage spies
   prove injected credentials are rejected before either receives them.
 - Before calling the implementation verified, bounded real-provider runs
   against fake Spotify and LAN implementations exercise native tool calls and
@@ -123,6 +131,12 @@ does not claim that the implementation or conformance kit is complete.
 
 ## Changelog
 
+- **2026-09-15 — ratified direction adopted.** The steward ratified
+  `do.v2-candidate.md`, including its `boundary.v1` targets: the observable
+  transcript is explicitly application-owned, not a reconstruction of hidden
+  engine or provider prompts. Credential exclusion and pre-persistence
+  rejection are unchanged; safe named continuation still requires the
+  separate upstream capability. This is neither a lock nor a conformance pass.
 - **2026-09-09 — ratified.** The steward ratified this contract and the
   accompanying boundary and Vision proposals, and required README, docs,
   `-h`, and `--help` to remain accurate for their respective audiences.
